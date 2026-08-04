@@ -1,0 +1,22 @@
+name = "muffin-worker"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Set this to your deployed frontend origin, e.g. "https://yourname.github.io"
+# You can also set it later with: wrangler secret put ALLOWED_ORIGIN
+# or as a plain var below for a non-secret value.
+[vars]
+ALLOWED_ORIGIN = "https://muffin-3rf.pages.dev"
+
+# Caches identical repeated questions so they don't re-hit Groq's rate limit.
+[[kv_namespaces]]
+binding = "CACHE"
+id = "8ff0445157214651bef96c478f189411"
+
+# Secrets (set with `wrangler secret put <NAME>`, do not put real values here):
+#   GROQ_API_KEY      required
+#   CLUB_PASSCODE     required
+#   GEMINI_API_KEY    optional — adds a free Google Gemini fallback if all Groq
+#                     models are rate-limited. Get one free at
+#                     https://aistudio.google.com/apikey. Skip it and Muffin
+#                     just shows a friendly "try again" message instead.
