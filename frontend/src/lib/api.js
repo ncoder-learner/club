@@ -32,12 +32,19 @@ function toApiMessage(message) {
 }
 
 export async function verifyPasscode(passcode) {
-  const res = await fetch(`${WORKER_URL}/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ passcode }),
-  });
-  return res.ok;
+  let res;
+  try {
+    res = await fetch(`${WORKER_URL}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode }),
+    });
+  } catch {
+    throw new UpstreamError('Could not reach Muffin. Please try again in a moment.');
+  }
+  if (res.status === 401) return false;
+  if (!res.ok) throw new UpstreamError('Could not reach Muffin. Please try again in a moment.');
+  return true;
 }
 
 export class TimeoutError extends Error {}

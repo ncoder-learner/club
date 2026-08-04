@@ -4,7 +4,7 @@ import PasscodeGate from './components/PasscodeGate';
 import HomeScreen from './components/HomeScreen';
 import { useChats } from './hooks/useChats';
 import * as store from './lib/storage';
-import { verifyPasscode } from './lib/api';
+import { UpstreamError, verifyPasscode } from './lib/api';
 
 // ChatScreen pulls in react-markdown/katex/highlight.js, which are the bulk of the
 // bundle — deferring them until the user actually opens a chat keeps the passcode
@@ -47,7 +47,15 @@ export default function App() {
 
   const handleUnlock = async (code) => {
     setPasscodeError(null);
-    const ok = await verifyPasscode(code).catch(() => false);
+    let ok;
+    try {
+      ok = await verifyPasscode(code);
+    } catch (err) {
+      setPasscodeError(
+        err instanceof UpstreamError ? err.message : 'Something went wrong. Please try again.'
+      );
+      return;
+    }
     if (!ok) {
       setPasscodeError('Incorrect passcode. Try again.');
       return;
