@@ -20,6 +20,7 @@ export default function ChatScreen({ chatsApi, passcode, onOpenSettings, onGoHom
     sendMessage,
     stopGenerating,
     regenerate,
+    editMessage,
   } = chatsApi;
   const [input, setInput] = useState('');
   const scrollRef = useRef(null);
@@ -43,6 +44,21 @@ export default function ChatScreen({ chatsApi, passcode, onOpenSettings, onGoHom
     sendMessage({ text, images, files, passcode });
   };
 
+  const exportChat = (chatId) => {
+    const chat = chats.find((c) => c.id === chatId);
+    if (!chat) return;
+    const markdown = chat.messages
+      .map((m) => `**${m.role === 'user' ? 'You' : 'Muffin'}:**\n\n${m.text ?? ''}`)
+      .join('\n\n---\n\n');
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${chat.title || 'muffin-chat'}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const messages = activeChat?.messages ?? [];
   const lastAssistantIndex = [...messages].reverse().findIndex((m) => m.role === 'assistant');
   const lastAssistantId =
@@ -57,6 +73,7 @@ export default function ChatScreen({ chatsApi, passcode, onOpenSettings, onGoHom
         onNewChat={newChat}
         onDeleteChat={removeChat}
         onRenameChat={rename}
+        onExportChat={exportChat}
         onOpenSettings={onOpenSettings}
         onGoHome={onGoHome}
       />
@@ -76,6 +93,11 @@ export default function ChatScreen({ chatsApi, passcode, onOpenSettings, onGoHom
               onRegenerate={
                 message.id === lastAssistantId && message.role === 'assistant' && !isGenerating
                   ? () => regenerate(passcode)
+                  : undefined
+              }
+              onEdit={
+                message.role === 'user' && !isGenerating
+                  ? (newText) => editMessage(message.id, newText, passcode)
                   : undefined
               }
             />

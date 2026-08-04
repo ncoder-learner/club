@@ -195,6 +195,28 @@ export function useChats() {
     abortRef.current?.abort();
   }, []);
 
+  const editMessage = useCallback(
+    async (messageId, newText, passcode) => {
+      if (!activeChatId) return;
+      const chat = store.getChat(activeChatId);
+      if (!chat) return;
+
+      const idx = chat.messages.findIndex((m) => m.id === messageId);
+      if (idx === -1) return;
+
+      // Editing a message discards it and everything after it (including whatever
+      // the assistant said in response), then regenerates from the edited version —
+      // same behavior as regenerate, just starting from an earlier point.
+      const editedMessage = { ...chat.messages[idx], text: newText };
+      const messages = [...chat.messages.slice(0, idx), editedMessage];
+
+      store.updateChatMessages(activeChatId, messages);
+      refresh();
+      await runStream(activeChatId, messages, passcode);
+    },
+    [activeChatId, refresh, runStream]
+  );
+
   const regenerate = useCallback(
     async (passcode) => {
       if (!activeChatId) return;
@@ -230,5 +252,6 @@ export function useChats() {
     sendMessage,
     stopGenerating,
     regenerate,
+    editMessage,
   };
 }

@@ -1,13 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import Splash from './components/Splash';
 import PasscodeGate from './components/PasscodeGate';
 import HomeScreen from './components/HomeScreen';
-import ChatScreen from './components/chat/ChatScreen';
-import SettingsPanel from './components/SettingsPanel';
-import CommandPalette from './components/CommandPalette';
 import { useChats } from './hooks/useChats';
 import * as store from './lib/storage';
 import { verifyPasscode } from './lib/api';
+
+// ChatScreen pulls in react-markdown/katex/highlight.js, which are the bulk of the
+// bundle — deferring them until the user actually opens a chat keeps the passcode
+// gate and home screen loading fast.
+const ChatScreen = lazy(() => import('./components/chat/ChatScreen'));
+const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
+const CommandPalette = lazy(() => import('./components/CommandPalette'));
 
 export default function App() {
   const [phase, setPhase] = useState(() => (store.hasSeenSplash() ? 'ready' : 'splash'));
@@ -65,41 +69,43 @@ export default function App() {
 
   return (
     <div className="h-full w-full">
-      {view === 'home' ? (
-        <HomeScreen onSubmit={startChatWith} />
-      ) : (
-        <ChatScreen
-          chatsApi={chatsApi}
-          passcode={passcode}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onGoHome={goHome}
-          composerRef={composerRef}
-          pendingInput={pendingInput}
-          onConsumePendingInput={() => setPendingInput(null)}
-        />
-      )}
+      <Suspense fallback={null}>
+        {view === 'home' ? (
+          <HomeScreen onSubmit={startChatWith} />
+        ) : (
+          <ChatScreen
+            chatsApi={chatsApi}
+            passcode={passcode}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onGoHome={goHome}
+            composerRef={composerRef}
+            pendingInput={pendingInput}
+            onConsumePendingInput={() => setPendingInput(null)}
+          />
+        )}
 
-      {settingsOpen && (
-        <SettingsPanel onClose={() => setSettingsOpen(false)} onClearChats={chatsApi.clearAll} />
-      )}
+        {settingsOpen && (
+          <SettingsPanel onClose={() => setSettingsOpen(false)} onClearChats={chatsApi.clearAll} />
+        )}
 
-      {paletteOpen && (
-        <CommandPalette
-          onClose={() => setPaletteOpen(false)}
-          commands={{
-            newChat: () => {
-              chatsApi.newChat();
-              setView('chat');
-            },
-            clearChats: chatsApi.clearAll,
-            focusInput: () => {
-              setView('chat');
-              setTimeout(() => composerRef.current?.focus(), 0);
-            },
-            openSettings: () => setSettingsOpen(true),
-          }}
-        />
-      )}
+        {paletteOpen && (
+          <CommandPalette
+            onClose={() => setPaletteOpen(false)}
+            commands={{
+              newChat: () => {
+                chatsApi.newChat();
+                setView('chat');
+              },
+              clearChats: chatsApi.clearAll,
+              focusInput: () => {
+                setView('chat');
+                setTimeout(() => composerRef.current?.focus(), 0);
+              },
+              openSettings: () => setSettingsOpen(true),
+            }}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

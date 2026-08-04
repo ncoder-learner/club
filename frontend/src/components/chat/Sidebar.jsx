@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Pencil, Plus, Settings, Trash2, X } from 'lucide-react';
+import { Check, Download, Pencil, Plus, Settings, Trash2, X } from 'lucide-react';
 
 export default function Sidebar({
   chats,
@@ -8,6 +8,7 @@ export default function Sidebar({
   onNewChat,
   onDeleteChat,
   onRenameChat,
+  onExportChat,
   onOpenSettings,
   onGoHome,
 }) {
@@ -81,6 +82,13 @@ export default function Sidebar({
                   title={chat.title}
                 >
                   {chat.title}
+                </button>
+                <button
+                  onClick={() => onExportChat(chat.id)}
+                  className="text-zinc-500 opacity-0 transition hover:text-white group-hover:opacity-100"
+                  title="Export as Markdown"
+                >
+                  <Download size={13} />
                 </button>
                 <button
                   onClick={() => startRename(chat)}

@@ -21,7 +21,7 @@ export default function HomeScreen({ onSubmit }) {
     onSubmit(value.trim());
   };
 
-  const useSuggestion = (prompt) => {
+  const applySuggestion = (prompt) => {
     setValue(prompt);
     inputRef.current?.focus();
   };
@@ -51,7 +51,7 @@ export default function HomeScreen({ onSubmit }) {
         {SUGGESTIONS.map((s) => (
           <button
             key={s.label}
-            onClick={() => useSuggestion(s.prompt)}
+            onClick={() => applySuggestion(s.prompt)}
             className="glass flex items-center gap-2 rounded-full px-4 py-2 text-sm text-zinc-300 transition hover:-translate-y-0.5 hover:text-white hover:shadow-lg hover:shadow-black/20"
           >
             <span>{s.icon}</span>

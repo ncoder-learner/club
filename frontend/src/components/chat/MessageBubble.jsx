@@ -4,18 +4,31 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
-import { Check, Copy, RotateCcw } from 'lucide-react';
+import { Check, Copy, Pencil, RotateCcw, X } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import { normalizeLatexDelimiters } from '../../lib/latex';
 
-export default function MessageBubble({ message, isStreaming, onRegenerate }) {
+export default function MessageBubble({ message, isStreaming, onRegenerate, onEdit }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(message.text ?? '');
 
   const copyMessage = async () => {
     await navigator.clipboard.writeText(message.text ?? '');
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  const startEdit = () => {
+    setDraft(message.text ?? '');
+    setIsEditing(true);
+  };
+
+  const saveEdit = () => {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== message.text) onEdit(trimmed);
+    setIsEditing(false);
   };
 
   return (
@@ -53,7 +66,39 @@ export default function MessageBubble({ message, isStreaming, onRegenerate }) {
               ))}
             </div>
           )}
-          {message.text && (
+          {isEditing ? (
+            <div className="flex flex-col gap-2">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    saveEdit();
+                  } else if (e.key === 'Escape') {
+                    setIsEditing(false);
+                  }
+                }}
+                autoFocus
+                rows={Math.min(10, Math.max(2, draft.split('\n').length))}
+                className="w-full resize-none rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none focus:border-accent/50"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setIsEditing(false)}
+                  className="flex items-center gap-1 rounded-full px-3 py-1 text-xs text-zinc-400 hover:text-white"
+                >
+                  <X size={12} /> Cancel
+                </button>
+                <button
+                  onClick={saveEdit}
+                  className="flex items-center gap-1 rounded-full bg-accent/80 px-3 py-1 text-xs text-white hover:bg-accent"
+                >
+                  <Check size={12} /> Save &amp; submit
+                </button>
+              </div>
+            </div>
+          ) : message.text && (
             <div className="prose prose-invert prose-sm max-w-none prose-p:my-2 prose-headings:my-2 prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
@@ -82,16 +127,25 @@ export default function MessageBubble({ message, isStreaming, onRegenerate }) {
             </div>
           )}
         </div>
-        {!isStreaming && message.text && (
-          <div className="flex w-fit items-center gap-1">
+        {!isStreaming && !isEditing && message.text && (
+          <div className={`flex w-fit items-center gap-1 ${isUser ? 'self-end' : ''}`}>
             <button
               onClick={copyMessage}
               className="flex items-center gap-1 rounded-full px-2 py-1 text-xs text-zinc-500 opacity-0 transition hover:text-white group-hover:opacity-100"
-              title="Copy reply text"
+              title="Copy message text"
             >
               {copied ? <Check size={12} /> : <Copy size={12} />}
               {copied ? 'Copied' : 'Copy'}
             </button>
+            {onEdit && (
+              <button
+                onClick={startEdit}
+                className="flex items-center gap-1 rounded-full px-2 py-1 text-xs text-zinc-500 opacity-0 transition hover:text-white group-hover:opacity-100"
+                title="Edit and resend"
+              >
+                <Pencil size={12} /> Edit
+              </button>
+            )}
             {onRegenerate && (
               <button
                 onClick={onRegenerate}
