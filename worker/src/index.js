@@ -56,7 +56,21 @@ function corsHeaders(origin) {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Max-Age': '86400',
+    Vary: 'Origin',
   };
+}
+
+// ALLOWED_ORIGIN may be a single origin or a comma-separated list (one per
+// deployed frontend). Echo back whichever one matches the request so the
+// browser sees a single valid Access-Control-Allow-Origin value.
+function resolveOrigin(env, requestOrigin) {
+  const allowed = (env.ALLOWED_ORIGIN || '*')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  if (allowed.includes('*')) return '*';
+  if (requestOrigin && allowed.includes(requestOrigin)) return requestOrigin;
+  return allowed[0] || '*';
 }
 
 function json(data, status, origin) {
@@ -196,7 +210,7 @@ async function accumulateGeminiStream(body) {
 
 export default {
   async fetch(request, env, ctx) {
-    const origin = env.ALLOWED_ORIGIN || '*';
+    const origin = resolveOrigin(env, request.headers.get('Origin'));
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders(origin) });
