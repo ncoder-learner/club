@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Paperclip, SendHorizonal, Square, X } from 'lucide-react';
+import { extractDocxText } from '../../lib/docs';
 
 const TEXT_EXTENSIONS = /\.(txt|md|py|cpp|cc|c|h|hpp|java|js|jsx|ts|tsx|json|csv|log|sh|rb|go|rs|cs|swift|kt|html|css|yml|yaml)$/i;
+const DOCX_EXTENSION = /\.docx$/i;
 
 export default function Composer({ value, onChange, onSend, disabled, isGenerating, onStop, autoFocusRef }) {
   const localRef = useRef(null);
@@ -26,6 +28,13 @@ export default function Composer({ value, onChange, onSend, disabled, isGenerati
           reader.readAsDataURL(file);
         });
         setImages((prev) => [...prev, { name: file.name, dataUrl }]);
+      } else if (DOCX_EXTENSION.test(file.name)) {
+        try {
+          const text = await extractDocxText(file);
+          setFiles((prev) => [...prev, { name: file.name, text }]);
+        } catch {
+          setFiles((prev) => [...prev, { name: file.name, text: '[Could not read this .docx file]' }]);
+        }
       } else if (TEXT_EXTENSIONS.test(file.name) || file.type.startsWith('text/')) {
         const text = await file.text();
         setFiles((prev) => [...prev, { name: file.name, text }]);
@@ -91,7 +100,7 @@ export default function Composer({ value, onChange, onSend, disabled, isGenerati
           ref={fileInputRef}
           type="file"
           multiple
-          accept="image/*,text/*,.py,.cpp,.cc,.c,.h,.hpp,.java,.js,.jsx,.ts,.tsx,.json,.md,.csv,.log,.sh,.rb,.go,.rs,.cs,.swift,.kt"
+          accept="image/*,text/*,.py,.cpp,.cc,.c,.h,.hpp,.java,.js,.jsx,.ts,.tsx,.json,.md,.csv,.log,.sh,.rb,.go,.rs,.cs,.swift,.kt,.docx"
           className="hidden"
           onChange={(e) => {
             if (e.target.files?.length) handleFiles(e.target.files);

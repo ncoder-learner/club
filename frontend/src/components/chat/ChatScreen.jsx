@@ -4,7 +4,16 @@ import MessageBubble from './MessageBubble';
 import Composer from './Composer';
 import ThinkingIndicator from './ThinkingIndicator';
 
-export default function ChatScreen({ chatsApi, passcode, onOpenSettings, onGoHome, composerRef, pendingInput, onConsumePendingInput }) {
+export default function ChatScreen({
+  chatsApi,
+  passcode,
+  onOpenSettings,
+  onGoHome,
+  onOpenSandbox,
+  composerRef,
+  pendingInput,
+  onConsumePendingInput,
+}) {
   const {
     chats,
     activeChat,
@@ -75,6 +84,7 @@ export default function ChatScreen({ chatsApi, passcode, onOpenSettings, onGoHom
         onRenameChat={rename}
         onExportChat={exportChat}
         onOpenSettings={onOpenSettings}
+        onOpenSandbox={() => onOpenSandbox()}
         onGoHome={onGoHome}
       />
 
@@ -100,6 +110,7 @@ export default function ChatScreen({ chatsApi, passcode, onOpenSettings, onGoHom
                   ? (newText) => editMessage(message.id, newText, passcode)
                   : undefined
               }
+              onOpenSandbox={onOpenSandbox}
             />
           ))}
           {isThinking && isStreamingThisChat && <ThinkingIndicator />}

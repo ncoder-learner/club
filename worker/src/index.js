@@ -1,3 +1,28 @@
+// Runs sandbox code through Judge0 CE's free public instance (no API key needed).
+// Judge0's language ids are stable, but if ce.judge0.com ever retires one of these,
+// GET /languages there for a replacement.
+const JUDGE0_URL = 'https://ce.judge0.com';
+const SANDBOX_LANGUAGES = {
+  python: { id: 109 }, // Python 3.13.2
+  cpp: { id: 105 }, // C++ (GCC 14.1.0)
+  javascript: { id: 102 }, // JavaScript (Node.js 22.08.0)
+};
+const MAX_SANDBOX_CODE_LENGTH = 20000;
+
+function toBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+function fromBase64(b64) {
+  if (!b64) return '';
+  const binary = atob(b64);
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GEMINI_URL = (model) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
@@ -144,17 +169,14 @@ async function callGemini(env, messages) {
   });
 }
 
-// Reads a Groq-shaped SSE stream to accumulate the full text. We always read a
-// model's whole response before deciding whether to show it to the user — some
-// reasoning-heavy models (e.g. groq/compound) occasionally burn their entire
-// output budget on internal "reasoning" chunks and return a 200 OK with zero
-// actual content. Buffering lets us detect that and fall through to the next
-// model instead of silently showing the student nothing.
-async function accumulateGroqStream(body) {
+// Yields each text delta from a Groq-shaped SSE stream as it arrives. The caller
+// decides how much to buffer — we don't accumulate here, so a model that streams
+// real content gets forwarded to the browser token-by-token instead of only after
+// the whole response finishes.
+async function* streamGroqDeltas(body) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let full = '';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -170,21 +192,19 @@ async function accumulateGroqStream(body) {
       try {
         const parsed = JSON.parse(payload);
         const delta = parsed.choices?.[0]?.delta?.content;
-        if (delta) full += delta;
+        if (delta) yield delta;
       } catch {
         // ignore malformed/partial SSE lines
       }
     }
   }
-  return full;
 }
 
-// Same idea as accumulateGroqStream, but for Gemini's SSE shape.
-async function accumulateGeminiStream(body) {
+// Same idea as streamGroqDeltas, but for Gemini's SSE shape.
+async function* streamGeminiDeltas(body) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let full = '';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -199,13 +219,69 @@ async function accumulateGeminiStream(body) {
       try {
         const parsed = JSON.parse(payload);
         const text = parsed.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') ?? '';
-        full += text;
+        if (text) yield text;
       } catch {
         // ignore malformed/partial SSE lines
       }
     }
   }
-  return full;
+}
+
+// Drives the Groq fallback chain (and Gemini beyond it) up to the first real
+// content delta, then hands back that delta plus an iterator for the rest.
+// Reasoning-heavy models (e.g. groq/compound) sometimes burn their whole output
+// budget on internal reasoning and return 200 OK with zero actual content —
+// waiting for the first delta (rather than the whole stream) before committing
+// lets us fall through to the next model on that case while still streaming
+// every model that does produce content token-by-token.
+async function resolveFirstContent(env, chain, upstreamMessages) {
+  let lastRes = null;
+  let lastErrText = '';
+  let lastIsContextError = false;
+  let sawEmptyCompletion = false;
+
+  for (const model of chain) {
+    const res = await callGroq(env, model, upstreamMessages);
+    if (res.ok) {
+      const iter = streamGroqDeltas(res.body)[Symbol.asyncIterator]();
+      const first = await iter.next();
+      if (!first.done && first.value) {
+        return { ok: true, firstChunk: first.value, rest: iter };
+      }
+      sawEmptyCompletion = true;
+      continue;
+    }
+    lastRes = res;
+    lastErrText = await res.text().catch(() => '');
+    lastIsContextError =
+      res.status === 400 && /context.?length|too (?:many|long)|maximum context/i.test(lastErrText);
+    // Fall through the chain on rate limits or context-length errors — a smaller
+    // model in the chain (or Gemini below) may have a bigger context window.
+    if (res.status !== 429 && !lastIsContextError) break;
+  }
+
+  // Groq never produced usable content (rate-limited, blew the context window,
+  // returned an empty completion, or failed outright) — try Gemini if configured.
+  if ((lastRes?.status === 429 || lastIsContextError || sawEmptyCompletion) && env.GEMINI_API_KEY) {
+    const geminiRes = await callGemini(env, upstreamMessages);
+    if (geminiRes.ok) {
+      const iter = streamGeminiDeltas(geminiRes.body)[Symbol.asyncIterator]();
+      const first = await iter.next();
+      if (!first.done && first.value) {
+        return { ok: true, firstChunk: first.value, rest: iter };
+      }
+    }
+  }
+
+  if (lastRes?.status === 429) {
+    const retryAfter = lastRes.headers.get('retry-after');
+    return { ok: false, status: 429, error: { error: 'rate_limited', retryAfter: retryAfter ? Number(retryAfter) : null } };
+  }
+  return {
+    ok: false,
+    status: 502,
+    error: { error: 'upstream_error', message: sawEmptyCompletion ? 'all models returned empty completions' : lastErrText },
+  };
 }
 
 export default {
@@ -238,6 +314,54 @@ export default {
       return json({ ok: true }, 200, origin);
     }
 
+    if (url.pathname === '/run') {
+      const { language, code, stdin } = body;
+      const spec = SANDBOX_LANGUAGES[language];
+      if (!spec) {
+        return json({ error: `Unsupported language: ${language}` }, 400, origin);
+      }
+      if (typeof code !== 'string' || !code.trim()) {
+        return json({ error: 'code is required' }, 400, origin);
+      }
+      if (code.length > MAX_SANDBOX_CODE_LENGTH) {
+        return json({ error: `code exceeds the ${MAX_SANDBOX_CODE_LENGTH}-character limit` }, 400, origin);
+      }
+
+      const judgeRes = await fetch(
+        `${JUDGE0_URL}/submissions?base64_encoded=true&wait=true&fields=stdout,stderr,compile_output,exit_code,status`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source_code: toBase64(code),
+            language_id: spec.id,
+            stdin: toBase64(typeof stdin === 'string' ? stdin : ''),
+            cpu_time_limit: 5,
+          }),
+        }
+      );
+
+      if (!judgeRes.ok) {
+        return json({ error: 'Sandbox request failed' }, 502, origin);
+      }
+
+      const result = await judgeRes.json();
+      const statusId = result.status?.id;
+      return json(
+        {
+          stdout: fromBase64(result.stdout),
+          stderr: fromBase64(result.stderr),
+          exitCode: result.exit_code ?? null,
+          // status id 6 is "Compilation Error" — anything else non-nominal (timeout,
+          // runtime signal, internal error) surfaces via statusMessage instead.
+          compileStderr: statusId === 6 ? fromBase64(result.compile_output) : null,
+          statusMessage: statusId > 3 && statusId !== 6 ? result.status?.description : null,
+        },
+        200,
+        origin
+      );
+    }
+
     if (url.pathname === '/chat') {
       const { messages } = body;
       if (!Array.isArray(messages) || messages.length === 0) {
@@ -264,69 +388,36 @@ export default {
       const chain = imageRequest ? VISION_MODELS : TEXT_MODELS;
       const upstreamMessages = [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
 
-      let lastRes = null;
-      let lastErrText = '';
-      let lastIsContextError = false;
-      let sawEmptyCompletion = false;
-      let successText = null;
+      const result = await resolveFirstContent(env, chain, upstreamMessages);
+      if (!result.ok) {
+        return json(result.error, result.status, origin);
+      }
 
-      for (const model of chain) {
-        const res = await callGroq(env, model, upstreamMessages);
-        if (res.ok) {
-          const text = await accumulateGroqStream(res.body);
-          if (text.trim()) {
-            successText = text;
-            break;
+      const stream = new ReadableStream({
+        async start(controller) {
+          const encoder = new TextEncoder();
+          let full = result.firstChunk;
+          controller.enqueue(encoder.encode(sseChunk(result.firstChunk)));
+          for await (const delta of result.rest) {
+            full += delta;
+            controller.enqueue(encoder.encode(sseChunk(delta)));
           }
-          // 200 OK but no actual content — e.g. a reasoning-heavy model (groq/compound)
-          // burned its whole output budget on internal reasoning. Treat this like a
-          // retryable failure instead of silently returning nothing to the student.
-          sawEmptyCompletion = true;
-          continue;
-        }
-        lastRes = res;
-        lastErrText = await res.text().catch(() => '');
-        lastIsContextError =
-          res.status === 400 && /context.?length|too (?:many|long)|maximum context/i.test(lastErrText);
-        // Fall through the chain on rate limits or context-length errors — a smaller
-        // model in the chain (or Gemini below) may have a bigger context window.
-        if (res.status !== 429 && !lastIsContextError) break;
-      }
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+          if (cacheKey) {
+            ctx.waitUntil(env.CACHE.put(cacheKey, full, { expirationTtl: CACHE_TTL_SECONDS }));
+          }
+        },
+      });
 
-      // Groq never produced usable content (rate-limited, blew the context window,
-      // returned an empty completion, or failed outright) — try Gemini if configured.
-      if (successText == null && (lastRes?.status === 429 || lastIsContextError || sawEmptyCompletion) && env.GEMINI_API_KEY) {
-        const geminiRes = await callGemini(env, upstreamMessages);
-        if (geminiRes.ok) {
-          const text = await accumulateGeminiStream(geminiRes.body);
-          if (text.trim()) successText = text;
-        }
-      }
-
-      if (successText != null) {
-        if (cacheKey) {
-          ctx.waitUntil(env.CACHE.put(cacheKey, successText, { expirationTtl: CACHE_TTL_SECONDS }));
-        }
-        return new Response(`${sseChunk(successText)}data: [DONE]\n\n`, {
-          status: 200,
-          headers: {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            ...corsHeaders(origin),
-          },
-        });
-      }
-
-      if (lastRes?.status === 429) {
-        const retryAfter = lastRes.headers.get('retry-after');
-        return json({ error: 'rate_limited', retryAfter: retryAfter ? Number(retryAfter) : null }, 429, origin);
-      }
-
-      return json(
-        { error: 'upstream_error', message: sawEmptyCompletion ? 'all models returned empty completions' : lastErrText },
-        502,
-        origin
-      );
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          ...corsHeaders(origin),
+        },
+      });
     }
 
     return json({ error: 'Not found' }, 404, origin);

@@ -4,20 +4,32 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
-import { Check, Copy, Pencil, RotateCcw, X } from 'lucide-react';
+import { Check, Copy, FileDown, Loader2, Pencil, RotateCcw, X } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import { normalizeLatexDelimiters } from '../../lib/latex';
+import { downloadBlob, markdownToDocxBlob } from '../../lib/docs';
 
-export default function MessageBubble({ message, isStreaming, onRegenerate, onEdit }) {
+export default function MessageBubble({ message, isStreaming, onRegenerate, onEdit, onOpenSandbox }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(message.text ?? '');
+  const [exporting, setExporting] = useState(false);
 
   const copyMessage = async () => {
     await navigator.clipboard.writeText(message.text ?? '');
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  const exportAsDoc = async () => {
+    setExporting(true);
+    try {
+      const blob = await markdownToDocxBlob(message.text ?? '');
+      downloadBlob(blob, `muffin-${isUser ? 'message' : 'reply'}.docx`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const startEdit = () => {
@@ -112,7 +124,11 @@ export default function MessageBubble({ message, isStreaming, onRegenerate, onEd
                         </code>
                       );
                     }
-                    return <CodeBlock className={className}>{children}</CodeBlock>;
+                    return (
+                      <CodeBlock className={className} onOpenSandbox={onOpenSandbox}>
+                        {children}
+                      </CodeBlock>
+                    );
                   },
                   pre({ children }) {
                     return <>{children}</>;
@@ -136,6 +152,15 @@ export default function MessageBubble({ message, isStreaming, onRegenerate, onEd
             >
               {copied ? <Check size={12} /> : <Copy size={12} />}
               {copied ? 'Copied' : 'Copy'}
+            </button>
+            <button
+              onClick={exportAsDoc}
+              disabled={exporting}
+              className="flex items-center gap-1 rounded-full px-2 py-1 text-xs text-zinc-500 opacity-0 transition hover:text-white group-hover:opacity-100"
+              title="Download as a Word document"
+            >
+              {exporting ? <Loader2 size={12} className="animate-spin" /> : <FileDown size={12} />}
+              .docx
             </button>
             {onEdit && (
               <button

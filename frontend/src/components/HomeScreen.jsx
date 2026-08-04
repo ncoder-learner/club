@@ -11,7 +11,7 @@ const SUGGESTIONS = [
   { label: 'Explain', icon: '💡', prompt: 'Explain how this works: ' },
 ];
 
-export default function HomeScreen({ onSubmit }) {
+export default function HomeScreen({ onSubmit, onOpenSandbox }) {
   const [value, setValue] = useState('');
   const inputRef = useRef(null);
 
@@ -58,6 +58,13 @@ export default function HomeScreen({ onSubmit }) {
             {s.label}
           </button>
         ))}
+        <button
+          onClick={onOpenSandbox}
+          className="glass flex items-center gap-2 rounded-full px-4 py-2 text-sm text-zinc-300 transition hover:-translate-y-0.5 hover:text-white hover:shadow-lg hover:shadow-black/20"
+        >
+          <span>🧪</span>
+          Code Sandbox
+        </button>
       </div>
     </div>
   );

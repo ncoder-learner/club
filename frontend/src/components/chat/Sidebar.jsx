@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Download, Pencil, Plus, Settings, Trash2, X } from 'lucide-react';
+import { Check, Download, Pencil, Plus, Settings, SquareCode, Trash2, X } from 'lucide-react';
 
 export default function Sidebar({
   chats,
@@ -10,6 +10,7 @@ export default function Sidebar({
   onRenameChat,
   onExportChat,
   onOpenSettings,
+  onOpenSandbox,
   onGoHome,
 }) {
   const [editingId, setEditingId] = useState(null);
@@ -109,8 +110,14 @@ export default function Sidebar({
       </div>
 
       <button
-        onClick={onOpenSettings}
+        onClick={onOpenSandbox}
         className="mt-2 flex items-center gap-2 rounded-muffin px-2 py-2 text-sm text-zinc-300 transition hover:bg-white/5"
+      >
+        <SquareCode size={16} /> Code Sandbox
+      </button>
+      <button
+        onClick={onOpenSettings}
+        className="flex items-center gap-2 rounded-muffin px-2 py-2 text-sm text-zinc-300 transition hover:bg-white/5"
       >
         <Settings size={16} /> Settings
       </button>

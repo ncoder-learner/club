@@ -12,6 +12,8 @@ import { verifyPasscode } from './lib/api';
 const ChatScreen = lazy(() => import('./components/chat/ChatScreen'));
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
 const CommandPalette = lazy(() => import('./components/CommandPalette'));
+// CodeMirror + its language packages are only needed once someone opens the sandbox.
+const CodeSandbox = lazy(() => import('./components/sandbox/CodeSandbox'));
 
 export default function App() {
   const [phase, setPhase] = useState(() => (store.hasSeenSplash() ? 'ready' : 'splash'));
@@ -21,6 +23,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [pendingInput, setPendingInput] = useState(null);
+  const [sandboxSeed, setSandboxSeed] = useState(null); // { code, language } | null
+  const [sandboxKey, setSandboxKey] = useState(0);
 
   const composerRef = useRef(null);
   const chatsApi = useChats();
@@ -59,6 +63,14 @@ export default function App() {
     chatsApi.sendMessage({ text, images: [], files: [], passcode });
   };
 
+  const openChat = () => setView('chat');
+
+  const openSandbox = (code, language) => {
+    setSandboxSeed(code != null ? { code, language } : null);
+    setSandboxKey((k) => k + 1); // remount the editor so new seed code actually loads
+    setView('sandbox');
+  };
+
   if (phase === 'splash') {
     return <Splash onDone={finishSplash} />;
   }
@@ -70,17 +82,27 @@ export default function App() {
   return (
     <div className="h-full w-full">
       <Suspense fallback={null}>
-        {view === 'home' ? (
-          <HomeScreen onSubmit={startChatWith} />
-        ) : (
+        {view === 'home' && <HomeScreen onSubmit={startChatWith} onOpenSandbox={() => openSandbox()} />}
+        {view === 'chat' && (
           <ChatScreen
             chatsApi={chatsApi}
             passcode={passcode}
             onOpenSettings={() => setSettingsOpen(true)}
             onGoHome={goHome}
+            onOpenSandbox={openSandbox}
             composerRef={composerRef}
             pendingInput={pendingInput}
             onConsumePendingInput={() => setPendingInput(null)}
+          />
+        )}
+        {view === 'sandbox' && (
+          <CodeSandbox
+            key={sandboxKey}
+            passcode={passcode}
+            onGoHome={goHome}
+            onOpenChat={openChat}
+            initialCode={sandboxSeed?.code}
+            initialLanguage={sandboxSeed?.language}
           />
         )}
 

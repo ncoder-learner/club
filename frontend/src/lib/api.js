@@ -40,6 +40,16 @@ export async function verifyPasscode(passcode) {
   return res.ok;
 }
 
+export async function runCode({ language, code, stdin, passcode }) {
+  const res = await fetch(`${WORKER_URL}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ passcode, language, code, stdin }),
+  });
+  await raiseForStatus(res);
+  return res.json();
+}
+
 async function raiseForStatus(res) {
   if (res.status === 401) throw new AuthError('Incorrect passcode.');
   if (res.status === 429) {
