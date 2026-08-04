@@ -96,7 +96,7 @@ export default function ChatScreen({
               <p className="text-sm">Ask Muffin anything — code, USACO prep, homework, debugging.</p>
             </div>
           )}
-          {messages.map((message) => (
+          {messages.map((message, i) => (
             <MessageBubble
               key={message.id}
               message={message}
@@ -111,6 +111,10 @@ export default function ChatScreen({
                   : undefined
               }
               onOpenSandbox={onOpenSandbox}
+              // A reply to a message that came with an attached file is likely meant
+              // to be handed back as a document, not just read in the chat — surface
+              // the .docx export prominently instead of leaving it hidden on hover.
+              highlightDocExport={message.role === 'assistant' && messages[i - 1]?.files?.length > 0}
             />
           ))}
           {isThinking && isStreamingThisChat && <ThinkingIndicator />}

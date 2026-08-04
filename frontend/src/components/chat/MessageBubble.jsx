@@ -9,7 +9,14 @@ import CodeBlock from './CodeBlock';
 import { normalizeLatexDelimiters } from '../../lib/latex';
 import { downloadBlob, markdownToDocxBlob } from '../../lib/docs';
 
-export default function MessageBubble({ message, isStreaming, onRegenerate, onEdit, onOpenSandbox }) {
+export default function MessageBubble({
+  message,
+  isStreaming,
+  onRegenerate,
+  onEdit,
+  onOpenSandbox,
+  highlightDocExport,
+}) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -143,6 +150,16 @@ export default function MessageBubble({ message, isStreaming, onRegenerate, onEd
             </div>
           )}
         </div>
+        {!isStreaming && !isEditing && highlightDocExport && message.text && (
+          <button
+            onClick={exportAsDoc}
+            disabled={exporting}
+            className="flex w-fit items-center gap-2 rounded-full bg-accent/90 px-4 py-2 text-sm font-medium text-white transition hover:bg-accent disabled:opacity-60"
+          >
+            {exporting ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
+            {exporting ? 'Preparing document…' : 'Download completed doc (.docx)'}
+          </button>
+        )}
         {!isStreaming && !isEditing && message.text && (
           <div className={`flex w-fit items-center gap-1 ${isUser ? 'self-end' : ''}`}>
             <button
@@ -153,15 +170,17 @@ export default function MessageBubble({ message, isStreaming, onRegenerate, onEd
               {copied ? <Check size={12} /> : <Copy size={12} />}
               {copied ? 'Copied' : 'Copy'}
             </button>
-            <button
-              onClick={exportAsDoc}
-              disabled={exporting}
-              className="flex items-center gap-1 rounded-full px-2 py-1 text-xs text-zinc-500 opacity-0 transition hover:text-white group-hover:opacity-100"
-              title="Download as a Word document"
-            >
-              {exporting ? <Loader2 size={12} className="animate-spin" /> : <FileDown size={12} />}
-              .docx
-            </button>
+            {!highlightDocExport && (
+              <button
+                onClick={exportAsDoc}
+                disabled={exporting}
+                className="flex items-center gap-1 rounded-full px-2 py-1 text-xs text-zinc-500 opacity-0 transition hover:text-white group-hover:opacity-100"
+                title="Download as a Word document"
+              >
+                {exporting ? <Loader2 size={12} className="animate-spin" /> : <FileDown size={12} />}
+                .docx
+              </button>
+            )}
             {onEdit && (
               <button
                 onClick={startEdit}
