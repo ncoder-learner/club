@@ -6,7 +6,7 @@ compatibility_date = "2024-11-01"
 # You can also set it later with: wrangler secret put ALLOWED_ORIGIN
 # or as a plain var below for a non-secret value.
 [vars]
-ALLOWED_ORIGIN = "https://muffin-3rf.pages.dev"
+ALLOWED_ORIGIN = "https://muffin-3rf.pages.dev,https://ncoder-learner.github.io,https://club-frontend-delta.vercel.app,https://club-frontend.netlify.app"
 
 # Caches identical repeated questions so they don't re-hit Groq's rate limit.
 [[kv_namespaces]]
