@@ -40,14 +40,33 @@ export async function verifyPasscode(passcode) {
   return res.ok;
 }
 
+export class TimeoutError extends Error {}
+
+const RUN_TIMEOUT_MS = 20000;
+
+// Judge0 (or the network to it) can occasionally hang instead of erroring — with
+// no timeout here, that strands the student on "Running…" forever with no way
+// to recover short of reloading and losing their code.
 export async function runCode({ language, code, stdin, passcode }) {
-  const res = await fetch(`${WORKER_URL}/run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ passcode, language, code, stdin }),
-  });
-  await raiseForStatus(res);
-  return res.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RUN_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${WORKER_URL}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode, language, code, stdin }),
+      signal: controller.signal,
+    });
+    await raiseForStatus(res);
+    return res.json();
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new TimeoutError('The sandbox took too long to respond. Please try running again.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function raiseForStatus(res) {

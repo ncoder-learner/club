@@ -12,6 +12,16 @@ function extractCodeBlock(text) {
   return match ? match[1].replace(/\n$/, '') : null;
 }
 
+// Judge0 reports "NZEC" (non-zero exit code) for any crash, but the single most
+// common cause for students here is calling input()/cin/readline with nothing in
+// the stdin box — that's a config issue, not a code bug, so it deserves its own
+// clearer message instead of a raw Python traceback.
+function isMissingStdinError(result, stdinValue) {
+  if (!result || stdinValue.trim()) return false;
+  const text = `${result.stderr || ''} ${result.statusMessage || ''}`;
+  return /EOFError|EOF when reading a line|NZEC/i.test(text);
+}
+
 const LANGUAGES = [
   {
     id: 'python',
@@ -49,6 +59,66 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
   codeRef.current = code;
   const resultRef = useRef(result);
   resultRef.current = result;
+  const stdinRef = useRef(null);
+  const containerRef = useRef(null);
+  const splitRef = useRef(null);
+
+  const [editorWidthPct, setEditorWidthPct] = useState(65);
+  const [stdinHeight, setStdinHeight] = useState(96);
+  const [askHeightPct, setAskHeightPct] = useState(45);
+
+  // Each handler fixes the starting position and starting size once, at
+  // mousedown, then computes an absolute new size on every move — accumulating
+  // off the delta instead would compound every intermediate mousemove tick into
+  // the total, making the drag runaway far faster than the mouse actually moved.
+  const startColResize = (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startPct = editorWidthPct;
+    const width = splitRef.current?.getBoundingClientRect().width || 1000;
+    const onMove = (ev) => {
+      const pct = startPct + ((ev.clientX - startX) / width) * 100;
+      setEditorWidthPct(Math.min(80, Math.max(30, pct)));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
+  const startStdinResize = (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = stdinHeight;
+    const onMove = (ev) => {
+      setStdinHeight(Math.min(300, Math.max(48, startHeight + (ev.clientY - startY))));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
+  const startAskResize = (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startPct = askHeightPct;
+    const containerHeight = containerRef.current?.getBoundingClientRect().height || 600;
+    const onMove = (ev) => {
+      const pct = startPct + ((ev.clientY - startY) / containerHeight) * 100;
+      setAskHeightPct(Math.min(80, Math.max(15, pct)));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   const [askOpen, setAskOpen] = useState(false);
   const [question, setQuestion] = useState('');
@@ -155,7 +225,7 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
   };
 
   return (
-    <div className="flex h-full w-full flex-col gap-3 p-3">
+    <div ref={containerRef} className="flex h-full w-full flex-col gap-3 p-3">
       <div className="glass flex items-center justify-between rounded-muffin-lg px-4 py-3">
         <div className="flex items-center gap-3">
           <button onClick={onGoHome} className="text-zinc-400 transition hover:text-white" title="Back">
@@ -198,7 +268,10 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
       </div>
 
       {askOpen && (
-        <div className="glass flex max-h-[45%] flex-col overflow-hidden rounded-muffin-lg">
+        <div
+          className="glass flex flex-col overflow-hidden rounded-muffin-lg"
+          style={{ height: `${askHeightPct}%` }}
+        >
           <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
             <span className="flex items-center gap-1.5 font-mono text-xs text-zinc-400">
               <MessageCircleQuestion size={13} /> Ask Muffin about this code
@@ -242,11 +315,19 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
               </button>
             )}
           </div>
+          <div
+            onMouseDown={startAskResize}
+            className="h-1.5 shrink-0 cursor-row-resize bg-transparent transition hover:bg-accent/40"
+            title="Drag to resize"
+          />
         </div>
       )}
 
-      <div className="flex flex-1 gap-3 overflow-hidden">
-        <div className="glass flex flex-1 flex-col overflow-hidden rounded-muffin-lg">
+      <div ref={splitRef} className="flex flex-1 gap-0 overflow-hidden">
+        <div
+          className="glass flex flex-col overflow-hidden rounded-muffin-lg"
+          style={{ width: `${editorWidthPct}%` }}
+        >
           <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
             <span className="font-mono text-xs text-zinc-400">main.{language.ext}</span>
             <div className="flex items-center gap-2">
@@ -280,17 +361,30 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
           </div>
         </div>
 
-        <div className="glass flex w-[340px] shrink-0 flex-col overflow-hidden rounded-muffin-lg">
+        <div
+          onMouseDown={startColResize}
+          className="mx-1 w-1.5 shrink-0 cursor-col-resize rounded-full bg-transparent transition hover:bg-accent/40"
+          title="Drag to resize"
+        />
+
+        <div className="glass flex flex-1 flex-col overflow-hidden rounded-muffin-lg">
           <div className="border-b border-white/10 px-4 py-2">
             <span className="flex items-center gap-1.5 font-mono text-xs text-zinc-400">
               <Terminal size={13} /> Input (stdin)
             </span>
           </div>
           <textarea
+            ref={stdinRef}
             value={stdin}
             onChange={(e) => setStdin(e.target.value)}
             placeholder="Anything your program reads from stdin..."
-            className="h-24 shrink-0 resize-none bg-transparent px-4 py-2 font-mono text-[13px] text-zinc-200 outline-none placeholder:text-zinc-600"
+            style={{ height: stdinHeight }}
+            className="shrink-0 resize-none bg-transparent px-4 py-2 font-mono text-[13px] text-zinc-200 outline-none placeholder:text-zinc-600"
+          />
+          <div
+            onMouseDown={startStdinResize}
+            className="h-1.5 shrink-0 cursor-row-resize bg-transparent transition hover:bg-accent/40"
+            title="Drag to resize"
           />
           <div className="border-t border-white/10 px-4 py-2">
             <span className="font-mono text-xs text-zinc-400">Output</span>
@@ -303,6 +397,19 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
             {running && <p className="text-zinc-500">Running…</p>}
             {result && (
               <>
+                {isMissingStdinError(result, stdin) && (
+                  <p className="mb-2 text-blue-300">
+                    This program is waiting for input (via input()/cin/readline) but the "Input (stdin)"
+                    box is empty.{' '}
+                    <button
+                      onClick={() => stdinRef.current?.focus()}
+                      className="underline hover:text-blue-200"
+                    >
+                      Fill it in above
+                    </button>{' '}
+                    and run again.
+                  </p>
+                )}
                 {result.statusMessage && <p className="text-amber-300">{result.statusMessage}</p>}
                 {result.compileStderr && (
                   <>
