@@ -80,7 +80,8 @@ export default function SettingsPanel({ onClose, onClearChats }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
       <div
-        className="glass flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-muffin-lg bg-zinc-950/95 animate-message-in"
+        className="glass flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-muffin-lg animate-message-in"
+        style={{ background: 'rgba(9, 9, 11, 0.97)' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
