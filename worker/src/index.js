@@ -313,9 +313,12 @@ function messagesToGemini(messages) {
 
 async function callGemini(env, messages) {
   const systemMessage = messages.find((m) => m.role === 'system');
-  return fetch(`${GEMINI_URL(GEMINI_MODEL)}&key=${env.GEMINI_API_KEY}`, {
+  // AI Studio's newer "AQ." auth keys (replacing the legacy AIza traffic-key
+  // format) aren't reliably recognized via the old ?key= query param — Google's
+  // current docs pass the key via this header instead.
+  return fetch(GEMINI_URL(GEMINI_MODEL), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
     body: JSON.stringify({
       systemInstruction: systemMessage ? { parts: [{ text: systemMessage.content }] } : undefined,
       contents: messagesToGemini(messages),
