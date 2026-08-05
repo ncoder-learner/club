@@ -284,6 +284,12 @@ async function resolveFirstContent(env, chain, upstreamMessages) {
   };
 }
 
+// A thrown error here would otherwise reach the client as Cloudflare's bare
+// default error page, which carries none of our CORS headers — the browser
+// then reports a confusing "no Access-Control-Allow-Origin header" instead of
+// the real 500, masking whatever actually failed. Routing every request
+// through this try/catch guarantees CORS headers make it onto error
+// responses too.
 export default {
   async fetch(request, env, ctx) {
     const origin = resolveOrigin(env, request.headers.get('Origin'));
@@ -292,134 +298,142 @@ export default {
       return new Response(null, { headers: corsHeaders(origin) });
     }
 
-    const url = new URL(request.url);
-
-    if (request.method !== 'POST') {
-      return json({ error: 'Not found' }, 404, origin);
-    }
-
-    let body;
     try {
-      body = await request.json();
-    } catch {
-      return json({ error: 'Invalid JSON body' }, 400, origin);
+      return await handleRequest(request, env, ctx, origin);
+    } catch (err) {
+      return json({ error: 'internal_error', message: err?.message || 'Unexpected error' }, 500, origin);
     }
-
-    const { passcode } = body;
-    if (!passcode || passcode !== env.CLUB_PASSCODE) {
-      return json({ error: 'Unauthorized' }, 401, origin);
-    }
-
-    if (url.pathname === '/verify') {
-      return json({ ok: true }, 200, origin);
-    }
-
-    if (url.pathname === '/run') {
-      const { language, code, stdin } = body;
-      const spec = SANDBOX_LANGUAGES[language];
-      if (!spec) {
-        return json({ error: `Unsupported language: ${language}` }, 400, origin);
-      }
-      if (typeof code !== 'string' || !code.trim()) {
-        return json({ error: 'code is required' }, 400, origin);
-      }
-      if (code.length > MAX_SANDBOX_CODE_LENGTH) {
-        return json({ error: `code exceeds the ${MAX_SANDBOX_CODE_LENGTH}-character limit` }, 400, origin);
-      }
-
-      const judgeRes = await fetch(
-        `${JUDGE0_URL}/submissions?base64_encoded=true&wait=true&fields=stdout,stderr,compile_output,exit_code,status`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            source_code: toBase64(code),
-            language_id: spec.id,
-            stdin: toBase64(typeof stdin === 'string' ? stdin : ''),
-            cpu_time_limit: 5,
-          }),
-        }
-      );
-
-      if (!judgeRes.ok) {
-        return json({ error: 'Sandbox request failed' }, 502, origin);
-      }
-
-      const result = await judgeRes.json();
-      const statusId = result.status?.id;
-      return json(
-        {
-          stdout: fromBase64(result.stdout),
-          stderr: fromBase64(result.stderr),
-          exitCode: result.exit_code ?? null,
-          // status id 6 is "Compilation Error" — anything else non-nominal (timeout,
-          // runtime signal, internal error) surfaces via statusMessage instead.
-          compileStderr: statusId === 6 ? fromBase64(result.compile_output) : null,
-          statusMessage: statusId > 3 && statusId !== 6 ? result.status?.description : null,
-        },
-        200,
-        origin
-      );
-    }
-
-    if (url.pathname === '/chat') {
-      const { messages } = body;
-      if (!Array.isArray(messages) || messages.length === 0) {
-        return json({ error: 'messages array is required' }, 400, origin);
-      }
-
-      const imageRequest = hasImage(messages);
-      const cacheKey = !imageRequest && env.CACHE ? await hashMessages(messages) : null;
-
-      if (cacheKey) {
-        const cached = await env.CACHE.get(cacheKey);
-        if (cached) {
-          return new Response(`${sseChunk(cached)}data: [DONE]\n\n`, {
-            status: 200,
-            headers: {
-              'Content-Type': 'text/event-stream',
-              'Cache-Control': 'no-cache',
-              ...corsHeaders(origin),
-            },
-          });
-        }
-      }
-
-      const chain = imageRequest ? VISION_MODELS : TEXT_MODELS;
-      const upstreamMessages = [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
-
-      const result = await resolveFirstContent(env, chain, upstreamMessages);
-      if (!result.ok) {
-        return json(result.error, result.status, origin);
-      }
-
-      const stream = new ReadableStream({
-        async start(controller) {
-          const encoder = new TextEncoder();
-          let full = result.firstChunk;
-          controller.enqueue(encoder.encode(sseChunk(result.firstChunk)));
-          for await (const delta of result.rest) {
-            full += delta;
-            controller.enqueue(encoder.encode(sseChunk(delta)));
-          }
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          controller.close();
-          if (cacheKey) {
-            ctx.waitUntil(env.CACHE.put(cacheKey, full, { expirationTtl: CACHE_TTL_SECONDS }));
-          }
-        },
-      });
-
-      return new Response(stream, {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          ...corsHeaders(origin),
-        },
-      });
-    }
-
-    return json({ error: 'Not found' }, 404, origin);
   },
 };
+
+async function handleRequest(request, env, ctx, origin) {
+  const url = new URL(request.url);
+
+  if (request.method !== 'POST') {
+    return json({ error: 'Not found' }, 404, origin);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400, origin);
+  }
+
+  const { passcode } = body;
+  if (!passcode || passcode !== env.CLUB_PASSCODE) {
+    return json({ error: 'Unauthorized' }, 401, origin);
+  }
+
+  if (url.pathname === '/verify') {
+    return json({ ok: true }, 200, origin);
+  }
+
+  if (url.pathname === '/run') {
+    const { language, code, stdin } = body;
+    const spec = SANDBOX_LANGUAGES[language];
+    if (!spec) {
+      return json({ error: `Unsupported language: ${language}` }, 400, origin);
+    }
+    if (typeof code !== 'string' || !code.trim()) {
+      return json({ error: 'code is required' }, 400, origin);
+    }
+    if (code.length > MAX_SANDBOX_CODE_LENGTH) {
+      return json({ error: `code exceeds the ${MAX_SANDBOX_CODE_LENGTH}-character limit` }, 400, origin);
+    }
+
+    const judgeRes = await fetch(
+      `${JUDGE0_URL}/submissions?base64_encoded=true&wait=true&fields=stdout,stderr,compile_output,exit_code,status`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_code: toBase64(code),
+          language_id: spec.id,
+          stdin: toBase64(typeof stdin === 'string' ? stdin : ''),
+          cpu_time_limit: 5,
+        }),
+      }
+    );
+
+    if (!judgeRes.ok) {
+      return json({ error: 'Sandbox request failed' }, 502, origin);
+    }
+
+    const result = await judgeRes.json();
+    const statusId = result.status?.id;
+    return json(
+      {
+        stdout: fromBase64(result.stdout),
+        stderr: fromBase64(result.stderr),
+        exitCode: result.exit_code ?? null,
+        // status id 6 is "Compilation Error" — anything else non-nominal (timeout,
+        // runtime signal, internal error) surfaces via statusMessage instead.
+        compileStderr: statusId === 6 ? fromBase64(result.compile_output) : null,
+        statusMessage: statusId > 3 && statusId !== 6 ? result.status?.description : null,
+      },
+      200,
+      origin
+    );
+  }
+
+  if (url.pathname === '/chat') {
+    const { messages } = body;
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return json({ error: 'messages array is required' }, 400, origin);
+    }
+
+    const imageRequest = hasImage(messages);
+    const cacheKey = !imageRequest && env.CACHE ? await hashMessages(messages) : null;
+
+    if (cacheKey) {
+      const cached = await env.CACHE.get(cacheKey);
+      if (cached) {
+        return new Response(`${sseChunk(cached)}data: [DONE]\n\n`, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            ...corsHeaders(origin),
+          },
+        });
+      }
+    }
+
+    const chain = imageRequest ? VISION_MODELS : TEXT_MODELS;
+    const upstreamMessages = [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
+
+    const result = await resolveFirstContent(env, chain, upstreamMessages);
+    if (!result.ok) {
+      return json(result.error, result.status, origin);
+    }
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        const encoder = new TextEncoder();
+        let full = result.firstChunk;
+        controller.enqueue(encoder.encode(sseChunk(result.firstChunk)));
+        for await (const delta of result.rest) {
+          full += delta;
+          controller.enqueue(encoder.encode(sseChunk(delta)));
+        }
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+        if (cacheKey) {
+          ctx.waitUntil(env.CACHE.put(cacheKey, full, { expirationTtl: CACHE_TTL_SECONDS }));
+        }
+      },
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        ...corsHeaders(origin),
+      },
+    });
+  }
+
+  return json({ error: 'Not found' }, 404, origin);
+}
