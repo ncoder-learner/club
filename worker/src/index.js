@@ -23,6 +23,27 @@ function fromBase64(b64) {
   return new TextDecoder().decode(bytes);
 }
 
+// Tracks how many requests each provider has actually served today, in KV —
+// purely informational (shown as a usage bar in Settings), not used for any
+// rate-limiting decision. Cloudflare's free KV tier caps out at 1,000 writes/day
+// per namespace; fine for a club-sized workload, but this would need rethinking
+// (e.g. batching) well before that.
+function todayKey(provider) {
+  return `usage:${provider}:${new Date().toISOString().slice(0, 10)}`;
+}
+
+async function recordUsage(env, provider) {
+  if (!env.CACHE) return;
+  const key = todayKey(provider);
+  const current = Number(await env.CACHE.get(key)) || 0;
+  await env.CACHE.put(key, String(current + 1), { expirationTtl: 60 * 60 * 48 });
+}
+
+async function readUsage(env, provider) {
+  if (!env.CACHE) return 0;
+  return Number(await env.CACHE.get(todayKey(provider))) || 0;
+}
+
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GEMINI_URL = (model) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
@@ -348,7 +369,7 @@ async function* streamGeminiDeltas(body) {
 // with a generous free tier and no reasoning-leak quirks; Groq's free tier
 // (fast but tightly rate-limited per model) is the fallback if Gemini is
 // unconfigured, rate-limited, or comes back empty.
-async function resolveFirstContent(env, chain, upstreamMessages) {
+async function resolveFirstContent(env, ctx, chain, upstreamMessages) {
   let lastRes = null;
   let lastErrText = '';
   let lastIsContextError = false;
@@ -360,12 +381,16 @@ async function resolveFirstContent(env, chain, upstreamMessages) {
       const iter = streamGeminiDeltas(geminiRes.body)[Symbol.asyncIterator]();
       const first = await iter.next();
       if (!first.done && first.value) {
+        ctx.waitUntil(recordUsage(env, 'gemini'));
         return { ok: true, firstChunk: first.value, rest: iter };
       }
       sawEmptyCompletion = true;
     } else {
       lastRes = geminiRes;
       lastErrText = await geminiRes.text().catch(() => '');
+      // Run `wrangler tail` from the worker folder to watch this live — shows
+      // exactly when Gemini gets rate-limited and Groq picks up the slack.
+      console.log('gemini-fallback:', geminiRes.status, lastErrText.slice(0, 200));
     }
   }
 
@@ -375,6 +400,8 @@ async function resolveFirstContent(env, chain, upstreamMessages) {
       const iter = streamGroqDeltas(res.body)[Symbol.asyncIterator]();
       const first = await iter.next();
       if (!first.done && first.value) {
+        ctx.waitUntil(recordUsage(env, 'groq'));
+        console.log('served-by:', model);
         return { ok: true, firstChunk: first.value, rest: iter };
       }
       sawEmptyCompletion = true;
@@ -409,6 +436,11 @@ export default {
     }
 
     const url = new URL(request.url);
+
+    if (request.method === 'GET' && url.pathname === '/usage') {
+      const [gemini, groq] = await Promise.all([readUsage(env, 'gemini'), readUsage(env, 'groq')]);
+      return json({ date: new Date().toISOString().slice(0, 10), gemini, groq }, 200, origin);
+    }
 
     if (request.method !== 'POST') {
       return json({ error: 'Not found' }, 404, origin);
@@ -495,7 +527,7 @@ export default {
       const chain = imageRequest ? VISION_MODELS : TEXT_MODELS;
       const upstreamMessages = [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
 
-      const result = await resolveFirstContent(env, chain, upstreamMessages);
+      const result = await resolveFirstContent(env, ctx, chain, upstreamMessages);
       if (!result.ok) {
         return json(result.error, result.status, origin);
       }

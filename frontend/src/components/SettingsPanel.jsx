@@ -1,8 +1,44 @@
-import { useState } from 'react';
-import { Moon, Sun, Trash2, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Moon, RefreshCw, Sun, Trash2, X } from 'lucide-react';
+import { getUsage } from '../lib/api';
+
+// Free-tier request caps aren't published as a single stable number and vary
+// by account — this is just a visual reference scale for the bar, not a claim
+// about your actual quota. Check aistudio.google.com / console.groq.com for
+// the real numbers.
+const REFERENCE_MAX = 500;
+
+function UsageBar({ label, count }) {
+  const pct = Math.min(100, Math.round((count / REFERENCE_MAX) * 100));
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-xs">
+        <span className="text-zinc-300">{label}</span>
+        <span className="text-zinc-500">{count} today</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+        <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
 
 export default function SettingsPanel({ onClose, onClearChats }) {
   const [confirming, setConfirming] = useState(false);
+  const [usage, setUsage] = useState(null);
+  const [usageError, setUsageError] = useState(null);
+  const [loadingUsage, setLoadingUsage] = useState(true);
+
+  const loadUsage = () => {
+    setLoadingUsage(true);
+    setUsageError(null);
+    getUsage()
+      .then(setUsage)
+      .catch((err) => setUsageError(err.message || 'Could not load usage'))
+      .finally(() => setLoadingUsage(false));
+  };
+
+  useEffect(loadUsage, []);
 
   const handleClear = () => {
     if (!confirming) {
@@ -41,6 +77,26 @@ export default function SettingsPanel({ onClose, onClearChats }) {
               <Sun size={16} /> Light
             </button>
           </div>
+        </div>
+
+        <div className="mb-6">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Usage today</p>
+            <button onClick={loadUsage} className="text-zinc-500 hover:text-white" title="Refresh">
+              <RefreshCw size={13} className={loadingUsage ? 'animate-spin' : ''} />
+            </button>
+          </div>
+          {usageError && <p className="text-xs text-red-400">{usageError}</p>}
+          {usage && !usageError && (
+            <div className="space-y-3">
+              <UsageBar label="Gemini" count={usage.gemini} />
+              <UsageBar label="Groq" count={usage.groq} />
+              <p className="text-[11px] text-zinc-600">
+                Bars are just a visual reference, not your exact provider quota — check
+                aistudio.google.com or console.groq.com for that.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="mb-6">

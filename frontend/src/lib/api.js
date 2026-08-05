@@ -8,6 +8,12 @@ export class RateLimitError extends Error {
 }
 export class UpstreamError extends Error {}
 
+export async function getUsage() {
+  const res = await fetch(`${WORKER_URL}/usage`);
+  if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+  return res.json();
+}
+
 function toApiMessage(message) {
   const hasAttachments = (message.images?.length ?? 0) > 0 || (message.files?.length ?? 0) > 0;
 
