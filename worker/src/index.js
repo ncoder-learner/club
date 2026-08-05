@@ -452,7 +452,21 @@ async function resolveFirstContent(env, ctx, chain, upstreamMessages) {
 export default {
   async fetch(request, env, ctx) {
     const origin = resolveOrigin(env, request.headers.get('Origin'));
+    try {
+      return await handleRequest(request, env, ctx, origin);
+    } catch (err) {
+      // An uncaught throw here would otherwise fall through to Cloudflare's
+      // default error page, which carries no CORS headers — the browser then
+      // reports it as a CORS failure instead of the real 500, hiding the
+      // actual cause. Always answer with CORS headers so the frontend at
+      // least sees the real error.
+      console.error('unhandled:', err?.stack || err);
+      return json({ error: 'Internal error' }, 500, origin);
+    }
+  },
+};
 
+async function handleRequest(request, env, ctx, origin) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders(origin) });
     }
@@ -601,6 +615,5 @@ export default {
       });
     }
 
-    return json({ error: 'Not found' }, 404, origin);
-  },
-};
+  return json({ error: 'Not found' }, 404, origin);
+}

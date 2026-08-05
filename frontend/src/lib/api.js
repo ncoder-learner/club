@@ -1,4 +1,9 @@
-const WORKER_URL = import.meta.env.VITE_WORKER_URL || 'http://127.0.0.1:8787';
+// On Netlify, route through our own domain via the /api proxy in netlify.toml
+// instead of calling muffin-worker.workers.dev directly cross-origin — some
+// restrictive networks (e.g. school firewalls) block *.workers.dev by hostname,
+// and this sidesteps that without needing per-deployment env var changes.
+const isNetlify = typeof window !== 'undefined' && window.location.hostname.endsWith('.netlify.app');
+const WORKER_URL = isNetlify ? '/api' : import.meta.env.VITE_WORKER_URL || 'http://127.0.0.1:8787';
 
 export class RateLimitError extends Error {
   constructor(retryAfter) {
