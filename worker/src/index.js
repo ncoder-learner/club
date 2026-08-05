@@ -23,25 +23,46 @@ function fromBase64(b64) {
   return new TextDecoder().decode(bytes);
 }
 
-// Tracks how many requests each provider has actually served today, in KV —
-// purely informational (shown as a usage bar in Settings), not used for any
-// rate-limiting decision. Cloudflare's free KV tier caps out at 1,000 writes/day
-// per namespace; fine for a club-sized workload, but this would need rethinking
-// (e.g. batching) well before that.
-function todayKey(provider) {
-  return `usage:${provider}:${new Date().toISOString().slice(0, 10)}`;
-}
-
-async function recordUsage(env, provider) {
+// Groq puts its *actual* rate-limit state on every response as headers — far
+// better than us guessing, so capture and cache the latest snapshot instead of
+// just counting requests ourselves. Gemini's API doesn't expose equivalent
+// headers, so for Gemini we can only detect *why* it's failing from the error
+// body (e.g. a project with zero quota allocated vs. genuinely rate-limited).
+async function recordGroqRateLimit(env, res) {
   if (!env.CACHE) return;
-  const key = todayKey(provider);
-  const current = Number(await env.CACHE.get(key)) || 0;
-  await env.CACHE.put(key, String(current + 1), { expirationTtl: 60 * 60 * 48 });
+  const limit = res.headers.get('x-ratelimit-limit-requests');
+  const remaining = res.headers.get('x-ratelimit-remaining-requests');
+  if (limit == null || remaining == null) return;
+  const snapshot = {
+    limit: Number(limit),
+    remaining: Number(remaining),
+    resetIn: res.headers.get('x-ratelimit-reset-requests'),
+    capturedAt: Date.now(),
+  };
+  // Short TTL — the window this resets on is typically a couple of minutes,
+  // so a stale cached snapshot would be actively misleading past that.
+  await env.CACHE.put('usage:groq:latest', JSON.stringify(snapshot), { expirationTtl: 600 });
 }
 
-async function readUsage(env, provider) {
-  if (!env.CACHE) return 0;
-  return Number(await env.CACHE.get(todayKey(provider))) || 0;
+async function readGroqUsage(env) {
+  if (!env.CACHE) return null;
+  const raw = await env.CACHE.get('usage:groq:latest');
+  return raw ? JSON.parse(raw) : null;
+}
+
+async function recordGeminiStatus(env, errText) {
+  if (!env.CACHE) return;
+  // Google's 429 body embeds lines like "limit: 0, model: ..." per violated
+  // quota metric — zero means the project has no allocation at all (usually a
+  // billing-not-linked issue), which is a completely different problem from a
+  // normal "you've used your quota for this window" rate limit.
+  const status = /limit:\s*0\b/.test(errText) ? 'zero_quota' : 'rate_limited';
+  await env.CACHE.put('usage:gemini:status', status, { expirationTtl: 600 });
+}
+
+async function readGeminiStatus(env) {
+  if (!env.CACHE) return null;
+  return env.CACHE.get('usage:gemini:status');
 }
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
@@ -381,7 +402,7 @@ async function resolveFirstContent(env, ctx, chain, upstreamMessages) {
       const iter = streamGeminiDeltas(geminiRes.body)[Symbol.asyncIterator]();
       const first = await iter.next();
       if (!first.done && first.value) {
-        ctx.waitUntil(recordUsage(env, 'gemini'));
+        ctx.waitUntil(env.CACHE?.put('usage:gemini:status', 'ok', { expirationTtl: 600 }));
         return { ok: true, firstChunk: first.value, rest: iter };
       }
       sawEmptyCompletion = true;
@@ -391,16 +412,17 @@ async function resolveFirstContent(env, ctx, chain, upstreamMessages) {
       // Run `wrangler tail` from the worker folder to watch this live — shows
       // exactly when Gemini gets rate-limited and Groq picks up the slack.
       console.log('gemini-fallback:', geminiRes.status, lastErrText.slice(0, 200));
+      ctx.waitUntil(recordGeminiStatus(env, lastErrText));
     }
   }
 
   for (const model of chain) {
     const res = await callGroq(env, model, upstreamMessages);
+    ctx.waitUntil(recordGroqRateLimit(env, res));
     if (res.ok) {
       const iter = streamGroqDeltas(res.body)[Symbol.asyncIterator]();
       const first = await iter.next();
       if (!first.done && first.value) {
-        ctx.waitUntil(recordUsage(env, 'groq'));
         console.log('served-by:', model);
         return { ok: true, firstChunk: first.value, rest: iter };
       }
@@ -438,8 +460,17 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/usage') {
-      const [gemini, groq] = await Promise.all([readUsage(env, 'gemini'), readUsage(env, 'groq')]);
-      return json({ date: new Date().toISOString().slice(0, 10), gemini, groq }, 200, origin);
+      const [groqSnapshot, geminiStatus] = await Promise.all([readGroqUsage(env), readGeminiStatus(env)]);
+      const groq = groqSnapshot
+        ? {
+            limit: groqSnapshot.limit,
+            remaining: groqSnapshot.remaining,
+            used: groqSnapshot.limit - groqSnapshot.remaining,
+            percentUsed: Math.round(((groqSnapshot.limit - groqSnapshot.remaining) / groqSnapshot.limit) * 100),
+            resetIn: groqSnapshot.resetIn,
+          }
+        : null;
+      return json({ groq, gemini: { status: geminiStatus ?? (env.GEMINI_API_KEY ? 'unknown' : 'unconfigured') } }, 200, origin);
     }
 
     if (request.method !== 'POST') {
