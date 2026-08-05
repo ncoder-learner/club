@@ -60,6 +60,13 @@ export default function Composer({ value, onChange, onSend, disabled, isGenerati
     }
   };
 
+  const onPaste = (e) => {
+    const pastedFiles = Array.from(e.clipboardData?.files ?? []);
+    if (pastedFiles.length === 0) return;
+    e.preventDefault();
+    handleFiles(pastedFiles);
+  };
+
   return (
     <div className="glass rounded-muffin-lg p-3">
       {(images.length > 0 || files.length > 0) && (
@@ -112,6 +119,7 @@ export default function Composer({ value, onChange, onSend, disabled, isGenerati
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder="What can I help with?"
           rows={1}
           className="max-h-[200px] flex-1 resize-none bg-transparent py-2 text-[15px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none"

@@ -1,9 +1,8 @@
 # Muffin 🧁
 
 An AI assistant for the CS Initiative club — USACO prep, coding help, debugging, and general
-questions. Free tier only: React + Vite frontend, a Cloudflare Worker backend, Groq for the AI,
-and a single shared passcode for the whole club (no accounts, no database — chat history lives in
-each person's browser).
+questions. Free tier only: React + Vite frontend, a Cloudflare Worker backend, Groq for the AI
+(no accounts, no database — chat history lives in each person's browser).
 
 ```
 muffin/
@@ -15,10 +14,9 @@ muffin/
 
 - The frontend is a static site. It can be hosted anywhere static files work (Cloudflare Pages or
   GitHub Pages, per your choice below).
-- The worker is a separate, tiny backend that runs on Cloudflare's free plan. It checks the
-  passcode and forwards chat requests to Groq.
-- Nobody's login or personal data is stored anywhere — only a shared passcode kept as a secret on
-  the worker.
+- The worker is a separate, tiny backend that runs on Cloudflare's free plan. It forwards chat
+  requests to Groq.
+- Nobody's login or personal data is stored anywhere.
 
 ---
 
@@ -39,17 +37,13 @@ You only do this once, ever.
 3. **Get a free Groq API key**: go to https://console.groq.com/keys, sign in, and click
    "Create API Key". Copy it somewhere safe — you'll paste it once in Part 1.
 
-4. **Pick a club passcode.** Any word or phrase the whole club will type to unlock Muffin (e.g.
-   `muffin-club-2026`). You'll set this as a secret too.
-
-5. Open a terminal **inside the `muffin` project folder** for all commands below.
+4. Open a terminal **inside the `muffin` project folder** for all commands below.
 
 ---
 
 ## Part 1 — Deploy the backend (Cloudflare Worker)
 
-This is the piece that holds your Groq API key and passcode, and talks to Groq on the frontend's
-behalf.
+This is the piece that holds your Groq API key and talks to Groq on the frontend's behalf.
 
 1. Go into the worker folder and install its dependencies:
    ```
@@ -62,16 +56,12 @@ behalf.
    npx wrangler login
    ```
 
-3. Set your two secrets. Wrangler will prompt you to paste each value — it won't be shown on
-   screen, that's normal:
+3. Set your secret. Wrangler will prompt you to paste the value — it won't be shown on screen,
+   that's normal:
    ```
    npx wrangler secret put GROQ_API_KEY
    ```
    (paste the Groq key from Part 0, step 3, then press Enter)
-   ```
-   npx wrangler secret put CLUB_PASSCODE
-   ```
-   (type the passcode you picked in Part 0, step 4, then press Enter)
 
 4. Deploy the worker:
    ```
@@ -141,7 +131,7 @@ if you're new to this, since everything stays in one place.
    npx wrangler deploy
    ```
 
-Done — share the `https://muffin.pages.dev` link and the passcode with the club.
+Done — share the `https://muffin.pages.dev` link with the club.
 
 **To ship updates later:** repeat steps 4–5 (`npm run build` then `wrangler pages deploy dist
 --project-name=muffin`) from the `frontend` folder.
@@ -199,7 +189,7 @@ Run these in two separate terminals, both from the project root:
 
 ```
 cd worker
-cp .dev.vars.example .dev.vars   # then edit .dev.vars with a real GROQ_API_KEY and any CLUB_PASSCODE
+cp .dev.vars.example .dev.vars   # then edit .dev.vars with a real GROQ_API_KEY
 npm run dev
 ```
 
@@ -214,7 +204,6 @@ Visit http://localhost:5173 — it talks to the worker at http://127.0.0.1:8787 
 
 - Chat history is stored only in each browser's `localStorage` — clearing browser data or using a
   different device/browser starts fresh.
-- The passcode is shared club-wide, not per-person. Anyone with the passcode and the site link can
-  use it — treat it like a shared Wi-Fi password.
-- If you ever want to change the passcode: `npx wrangler secret put CLUB_PASSCODE` from the
-  `worker` folder, then tell the club the new one.
+- The site and worker are open to anyone with the link — there's no login gate. Anyone who
+  discovers the URLs can use your Groq key's quota, so keep an eye on usage if you make the repo
+  public.

@@ -15,7 +15,6 @@ id = "8ff0445157214651bef96c478f189411"
 
 # Secrets (set with `wrangler secret put <NAME>`, do not put real values here):
 #   GROQ_API_KEY      required
-#   CLUB_PASSCODE     required
 #   GEMINI_API_KEY    optional — adds a free Google Gemini fallback if all Groq
 #                     models are rate-limited. Get one free at
 #                     https://aistudio.google.com/apikey. Skip it and Muffin

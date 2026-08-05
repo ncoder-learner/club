@@ -1,5 +1,4 @@
 GROQ_API_KEY=your_groq_api_key_here
-CLUB_PASSCODE=choose_a_club_passcode
 # Optional — adds a Gemini fallback if all Groq models are rate-limited.
 # Get a free key at https://aistudio.google.com/apikey, or omit this line.
 GEMINI_API_KEY=

@@ -2,7 +2,6 @@ const KEYS = {
   chats: 'muffin_chats',
   activeChat: 'muffin_active_chat',
   seenSplash: 'muffin_seen_splash',
-  passcode: 'muffin_passcode',
 };
 
 function readChats() {
@@ -98,16 +97,4 @@ export function hasSeenSplash() {
 
 export function markSeenSplash() {
   localStorage.setItem(KEYS.seenSplash, '1');
-}
-
-export function getSavedPasscode() {
-  return localStorage.getItem(KEYS.passcode);
-}
-
-export function savePasscode(passcode) {
-  localStorage.setItem(KEYS.passcode, passcode);
-}
-
-export function clearPasscode() {
-  localStorage.removeItem(KEYS.passcode);
 }

@@ -305,15 +305,6 @@ export default {
       return json({ error: 'Invalid JSON body' }, 400, origin);
     }
 
-    const { passcode } = body;
-    if (!passcode || passcode !== env.CLUB_PASSCODE) {
-      return json({ error: 'Unauthorized' }, 401, origin);
-    }
-
-    if (url.pathname === '/verify') {
-      return json({ ok: true }, 200, origin);
-    }
-
     if (url.pathname === '/run') {
       const { language, code, stdin } = body;
       const spec = SANDBOX_LANGUAGES[language];

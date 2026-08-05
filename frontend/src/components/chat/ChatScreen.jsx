@@ -6,7 +6,6 @@ import ThinkingIndicator from './ThinkingIndicator';
 
 export default function ChatScreen({
   chatsApi,
-  passcode,
   onOpenSettings,
   onGoHome,
   onOpenSandbox,
@@ -20,8 +19,6 @@ export default function ChatScreen({
     activeChatId,
     isThinking,
     streaming,
-    error,
-    setError,
     selectChat,
     newChat,
     removeChat,
@@ -50,7 +47,7 @@ export default function ChatScreen({
 
   const handleSend = ({ text, images, files }) => {
     setInput('');
-    sendMessage({ text, images, files, passcode });
+    sendMessage({ text, images, files });
   };
 
   const exportChat = (chatId) => {
@@ -102,12 +99,12 @@ export default function ChatScreen({
               message={message}
               onRegenerate={
                 message.id === lastAssistantId && message.role === 'assistant' && !isGenerating
-                  ? () => regenerate(passcode)
+                  ? () => regenerate()
                   : undefined
               }
               onEdit={
                 message.role === 'user' && !isGenerating
-                  ? (newText) => editMessage(message.id, newText, passcode)
+                  ? (newText) => editMessage(message.id, newText)
                   : undefined
               }
               onOpenSandbox={onOpenSandbox}
@@ -125,15 +122,6 @@ export default function ChatScreen({
             />
           )}
         </div>
-
-        {error === 'auth' && (
-          <div className="glass flex items-center justify-between rounded-muffin px-4 py-2 text-sm text-red-300">
-            Incorrect passcode. Please refresh and re-enter it.
-            <button onClick={() => setError(null)} className="text-zinc-400 hover:text-white">
-              ✕
-            </button>
-          </div>
-        )}
 
         <Composer
           value={input}

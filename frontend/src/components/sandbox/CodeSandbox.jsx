@@ -1,11 +1,30 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
 import { cpp } from '@codemirror/lang-cpp';
 import { javascript } from '@codemirror/lang-javascript';
 import { oneDark } from '@codemirror/theme-one-dark';
-import { ArrowLeft, Check, Download, Loader2, MessageCircleQuestion, MessagesSquare, Play, Terminal, X } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  Download,
+  Loader2,
+  MessageCircleQuestion,
+  MessagesSquare,
+  Play,
+  Square,
+  Terminal,
+  X,
+} from 'lucide-react';
 import { runCode, streamChat } from '../../lib/api';
+import InteractiveRunner from '../../workers/interactiveRunner.js?worker';
+
+// Python and JS can be genuinely interactive (real blocking input()) via a Web
+// Worker + SharedArrayBuffer — but SharedArrayBuffer only exists when the page is
+// cross-origin-isolated (see coi-serviceworker.js). C++ has no free in-browser
+// compiler, so it always runs through Judge0 in batch mode regardless.
+const INTERACTIVE_SUPPORTED =
+  typeof SharedArrayBuffer !== 'undefined' && typeof window !== 'undefined' && window.crossOriginIsolated;
 
 function extractCodeBlock(text) {
   const match = /```(?:\w+)?\n([\s\S]*?)```/.exec(text);
@@ -47,7 +66,7 @@ const LANGUAGES = [
   },
 ];
 
-export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCode, initialLanguage }) {
+export default function CodeSandbox({ onGoHome, onOpenChat, initialCode, initialLanguage }) {
   const startingLanguage = LANGUAGES.find((l) => l.id === initialLanguage) ?? LANGUAGES[0];
   const [languageId, setLanguageId] = useState(startingLanguage.id);
   const [code, setCode] = useState(initialCode || startingLanguage.stub);
@@ -66,6 +85,33 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
   const [editorWidthPct, setEditorWidthPct] = useState(65);
   const [stdinHeight, setStdinHeight] = useState(96);
   const [askHeightPct, setAskHeightPct] = useState(45);
+
+  // Interactive (Python/JS-in-worker) run state — separate from the Judge0
+  // batch-mode state above since they're genuinely different execution paths.
+  const [termOutput, setTermOutput] = useState('');
+  const [awaitingInput, setAwaitingInput] = useState(false);
+  const [pendingInputValue, setPendingInputValue] = useState('');
+  const [interactiveRunning, setInteractiveRunning] = useState(false);
+  const workerRef = useRef(null);
+  const sabRef = useRef(null);
+  const termScrollRef = useRef(null);
+  const inputLineRef = useRef(null);
+
+  const useInteractiveMode = languageId !== 'cpp' && INTERACTIVE_SUPPORTED;
+
+  useEffect(() => {
+    termScrollRef.current?.scrollTo({ top: termScrollRef.current.scrollHeight });
+  }, [termOutput, awaitingInput]);
+
+  useEffect(() => {
+    if (awaitingInput) inputLineRef.current?.focus();
+  }, [awaitingInput]);
+
+  // Stop any running worker on unmount or language switch — a stale worker left
+  // running (or blocked on Atomics.wait forever) would just leak silently otherwise.
+  useEffect(() => {
+    return () => workerRef.current?.terminate();
+  }, []);
 
   // Each handler fixes the starting position and starting size once, at
   // mousedown, then computes an absolute new size on every move — accumulating
@@ -135,6 +181,10 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
     if (!codeRef.current.trim() || codeRef.current === language.stub) {
       setCode(next.stub);
     }
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    setInteractiveRunning(false);
+    setAwaitingInput(false);
     setLanguageId(id);
     setResult(null);
     setRunError(null);
@@ -144,13 +194,74 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
     setRunning(true);
     setRunError(null);
     try {
-      const res = await runCode({ language: languageId, code, stdin, passcode });
+      const res = await runCode({ language: languageId, code, stdin });
       setResult(res);
     } catch (err) {
       setRunError(err.message || 'Something went wrong running your code.');
     } finally {
       setRunning(false);
     }
+  };
+
+  const runInteractive = () => {
+    setTermOutput('');
+    setAwaitingInput(false);
+    setPendingInputValue('');
+    setInteractiveRunning(true);
+
+    const worker = new InteractiveRunner();
+    workerRef.current = worker;
+    const sab = {
+      flag: new SharedArrayBuffer(4),
+      len: new SharedArrayBuffer(4),
+      data: new SharedArrayBuffer(65536),
+    };
+    sabRef.current = sab;
+
+    worker.onmessage = (event) => {
+      const msg = event.data;
+      if (msg.type === 'stdout' || msg.type === 'stderr') {
+        setTermOutput((prev) => prev + msg.text);
+      } else if (msg.type === 'input_request') {
+        setAwaitingInput(true);
+      } else if (msg.type === 'done') {
+        setInteractiveRunning(false);
+        setAwaitingInput(false);
+        worker.terminate();
+      } else if (msg.type === 'error') {
+        setTermOutput((prev) => `${prev}\n${msg.message}\n`);
+        setInteractiveRunning(false);
+        setAwaitingInput(false);
+        worker.terminate();
+      }
+    };
+
+    worker.postMessage({ type: 'run', language: languageId, code: codeRef.current, sab });
+  };
+
+  const submitInput = () => {
+    const value = pendingInputValue;
+    const sab = sabRef.current;
+    if (!sab) return;
+
+    setTermOutput((prev) => `${prev}${value}\n`); // echo, like a real terminal
+    setPendingInputValue('');
+    setAwaitingInput(false);
+
+    const bytes = new TextEncoder().encode(value);
+    new Uint8Array(sab.data).set(bytes);
+    new Int32Array(sab.len)[0] = bytes.length;
+    const flag = new Int32Array(sab.flag);
+    Atomics.store(flag, 0, 1);
+    Atomics.notify(flag, 0);
+  };
+
+  const stopInteractive = () => {
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    setInteractiveRunning(false);
+    setAwaitingInput(false);
+    setTermOutput((prev) => `${prev}\n(stopped)\n`);
   };
 
   const askAboutCode = async () => {
@@ -180,7 +291,6 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
     try {
       await streamChat({
         messages: [{ role: 'user', text: prompt, images: [], files: [] }],
-        passcode,
         onDelta: (_chunk, soFar) => setAnswer(soFar),
       });
       setQuestion('');
@@ -338,14 +448,23 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
               >
                 <Download size={13} /> Save
               </button>
-              <button
-                onClick={run}
-                disabled={running}
-                className="flex items-center gap-1 rounded-full bg-accent/90 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-accent disabled:opacity-50"
-              >
-                {running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
-                {running ? 'Running…' : 'Run'}
-              </button>
+              {useInteractiveMode && interactiveRunning ? (
+                <button
+                  onClick={stopInteractive}
+                  className="flex items-center gap-1 rounded-full bg-red-500/80 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-500"
+                >
+                  <Square size={13} /> Stop
+                </button>
+              ) : (
+                <button
+                  onClick={useInteractiveMode ? runInteractive : run}
+                  disabled={running}
+                  className="flex items-center gap-1 rounded-full bg-accent/90 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-accent disabled:opacity-50"
+                >
+                  {running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+                  {running ? 'Running…' : 'Run'}
+                </button>
+              )}
             </div>
           </div>
           <div className="flex-1 overflow-auto">
@@ -367,68 +486,107 @@ export default function CodeSandbox({ passcode, onGoHome, onOpenChat, initialCod
           title="Drag to resize"
         />
 
-        <div className="glass flex flex-1 flex-col overflow-hidden rounded-muffin-lg">
-          <div className="border-b border-white/10 px-4 py-2">
-            <span className="flex items-center gap-1.5 font-mono text-xs text-zinc-400">
-              <Terminal size={13} /> Input (stdin)
-            </span>
+        {useInteractiveMode ? (
+          <div className="glass flex flex-1 flex-col overflow-hidden rounded-muffin-lg">
+            <div className="border-b border-white/10 px-4 py-2">
+              <span className="flex items-center gap-1.5 font-mono text-xs text-zinc-400">
+                <Terminal size={13} /> Terminal
+              </span>
+            </div>
+            <div
+              ref={termScrollRef}
+              onClick={() => inputLineRef.current?.focus()}
+              className="flex-1 overflow-auto px-4 py-2 font-mono text-[13px] leading-relaxed text-zinc-200"
+            >
+              {!termOutput && !interactiveRunning && (
+                <p className="text-zinc-600">
+                  Run your code — this terminal is fully interactive, so if it calls input() you can
+                  just type your answer right here when it asks.
+                </p>
+              )}
+              <span className="whitespace-pre-wrap">{termOutput}</span>
+              {awaitingInput && (
+                <input
+                  ref={inputLineRef}
+                  value={pendingInputValue}
+                  onChange={(e) => setPendingInputValue(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && submitInput()}
+                  className="w-full bg-transparent text-[13px] text-zinc-100 outline-none"
+                  autoFocus
+                />
+              )}
+            </div>
           </div>
-          <textarea
-            ref={stdinRef}
-            value={stdin}
-            onChange={(e) => setStdin(e.target.value)}
-            placeholder="Anything your program reads from stdin..."
-            style={{ height: stdinHeight }}
-            className="shrink-0 resize-none bg-transparent px-4 py-2 font-mono text-[13px] text-zinc-200 outline-none placeholder:text-zinc-600"
-          />
-          <div
-            onMouseDown={startStdinResize}
-            className="h-1.5 shrink-0 cursor-row-resize bg-transparent transition hover:bg-accent/40"
-            title="Drag to resize"
-          />
-          <div className="border-t border-white/10 px-4 py-2">
-            <span className="font-mono text-xs text-zinc-400">Output</span>
-          </div>
-          <div className="flex-1 overflow-auto px-4 py-2 font-mono text-[13px] leading-relaxed">
-            {runError && <p className="text-red-400">{runError}</p>}
-            {!runError && !result && !running && (
-              <p className="text-zinc-600">Run your code to see output here.</p>
+        ) : (
+          <div className="glass flex flex-1 flex-col overflow-hidden rounded-muffin-lg">
+            <div className="border-b border-white/10 px-4 py-2">
+              <span className="flex items-center gap-1.5 font-mono text-xs text-zinc-400">
+                <Terminal size={13} /> Input (stdin)
+              </span>
+            </div>
+            {languageId !== 'cpp' && (
+              <p className="border-b border-white/10 bg-blue-500/5 px-4 py-1.5 text-[11px] text-blue-300/80">
+                Interactive input needs cross-origin isolation, which isn't active in this browser —
+                using the stdin box below instead.
+              </p>
             )}
-            {running && <p className="text-zinc-500">Running…</p>}
-            {result && (
-              <>
-                {isMissingStdinError(result, stdin) && (
-                  <p className="mb-2 text-blue-300">
-                    This program is waiting for input (via input()/cin/readline) but the "Input (stdin)"
-                    box is empty.{' '}
-                    <button
-                      onClick={() => stdinRef.current?.focus()}
-                      className="underline hover:text-blue-200"
-                    >
-                      Fill it in above
-                    </button>{' '}
-                    and run again.
-                  </p>
-                )}
-                {result.statusMessage && <p className="text-amber-300">{result.statusMessage}</p>}
-                {result.compileStderr && (
-                  <>
-                    <p className="mb-1 text-xs uppercase tracking-wide text-amber-400/80">Compile error</p>
-                    <pre className="mb-3 whitespace-pre-wrap text-amber-300">{result.compileStderr}</pre>
-                  </>
-                )}
-                {result.stdout && <pre className="whitespace-pre-wrap text-zinc-200">{result.stdout}</pre>}
-                {result.stderr && <pre className="mt-2 whitespace-pre-wrap text-red-400">{result.stderr}</pre>}
-                {!result.stdout && !result.stderr && !result.compileStderr && !result.statusMessage && (
-                  <p className="text-zinc-600">(no output)</p>
-                )}
-                {result.exitCode != null && result.exitCode !== 0 && (
-                  <p className="mt-2 text-xs text-zinc-500">Exited with code {result.exitCode}</p>
-                )}
-              </>
-            )}
+            <textarea
+              ref={stdinRef}
+              value={stdin}
+              onChange={(e) => setStdin(e.target.value)}
+              placeholder="Anything your program reads from stdin..."
+              style={{ height: stdinHeight }}
+              className="shrink-0 resize-none bg-transparent px-4 py-2 font-mono text-[13px] text-zinc-200 outline-none placeholder:text-zinc-600"
+            />
+            <div
+              onMouseDown={startStdinResize}
+              className="h-1.5 shrink-0 cursor-row-resize bg-transparent transition hover:bg-accent/40"
+              title="Drag to resize"
+            />
+            <div className="border-t border-white/10 px-4 py-2">
+              <span className="font-mono text-xs text-zinc-400">Output</span>
+            </div>
+            <div className="flex-1 overflow-auto px-4 py-2 font-mono text-[13px] leading-relaxed">
+              {runError && <p className="text-red-400">{runError}</p>}
+              {!runError && !result && !running && (
+                <p className="text-zinc-600">Run your code to see output here.</p>
+              )}
+              {running && <p className="text-zinc-500">Running…</p>}
+              {result && (
+                <>
+                  {isMissingStdinError(result, stdin) && (
+                    <p className="mb-2 text-blue-300">
+                      This program is waiting for input (via input()/cin/readline) but the "Input (stdin)"
+                      box is empty.{' '}
+                      <button
+                        onClick={() => stdinRef.current?.focus()}
+                        className="underline hover:text-blue-200"
+                      >
+                        Fill it in above
+                      </button>{' '}
+                      and run again.
+                    </p>
+                  )}
+                  {result.statusMessage && <p className="text-amber-300">{result.statusMessage}</p>}
+                  {result.compileStderr && (
+                    <>
+                      <p className="mb-1 text-xs uppercase tracking-wide text-amber-400/80">Compile error</p>
+                      <pre className="mb-3 whitespace-pre-wrap text-amber-300">{result.compileStderr}</pre>
+                    </>
+                  )}
+                  {result.stdout && <pre className="whitespace-pre-wrap text-zinc-200">{result.stdout}</pre>}
+                  {result.stderr && <pre className="mt-2 whitespace-pre-wrap text-red-400">{result.stderr}</pre>}
+                  {!result.stdout && !result.stderr && !result.compileStderr && !result.statusMessage && (
+                    <p className="text-zinc-600">(no output)</p>
+                  )}
+                  {result.exitCode != null && result.exitCode !== 0 && (
+                    <p className="mt-2 text-xs text-zinc-500">Exited with code {result.exitCode}</p>
+                  )}
+                </>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

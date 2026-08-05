@@ -1,6 +1,5 @@
 const WORKER_URL = import.meta.env.VITE_WORKER_URL || 'http://127.0.0.1:8787';
 
-export class AuthError extends Error {}
 export class RateLimitError extends Error {
   constructor(retryAfter) {
     super('Muffin is rate-limited right now.');
@@ -31,15 +30,6 @@ function toApiMessage(message) {
   return { role: message.role, content };
 }
 
-export async function verifyPasscode(passcode) {
-  const res = await fetch(`${WORKER_URL}/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ passcode }),
-  });
-  return res.ok;
-}
-
 export class TimeoutError extends Error {}
 
 const RUN_TIMEOUT_MS = 20000;
@@ -47,14 +37,14 @@ const RUN_TIMEOUT_MS = 20000;
 // Judge0 (or the network to it) can occasionally hang instead of erroring — with
 // no timeout here, that strands the student on "Running…" forever with no way
 // to recover short of reloading and losing their code.
-export async function runCode({ language, code, stdin, passcode }) {
+export async function runCode({ language, code, stdin }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RUN_TIMEOUT_MS);
   try {
     const res = await fetch(`${WORKER_URL}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ passcode, language, code, stdin }),
+      body: JSON.stringify({ language, code, stdin }),
       signal: controller.signal,
     });
     await raiseForStatus(res);
@@ -70,7 +60,6 @@ export async function runCode({ language, code, stdin, passcode }) {
 }
 
 async function raiseForStatus(res) {
-  if (res.status === 401) throw new AuthError('Incorrect passcode.');
   if (res.status === 429) {
     const data = await res.json().catch(() => ({}));
     throw new RateLimitError(data.retryAfter ?? null);
@@ -83,12 +72,11 @@ async function raiseForStatus(res) {
 
 // Streams a chat completion, calling onDelta(textChunk) as tokens arrive.
 // Returns the full assembled reply text.
-export async function streamChat({ messages, passcode, onDelta, signal }) {
+export async function streamChat({ messages, onDelta, signal }) {
   const res = await fetch(`${WORKER_URL}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      passcode,
       messages: messages.map(toApiMessage),
     }),
     signal,

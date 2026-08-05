@@ -62,8 +62,8 @@ export default function SettingsPanel({ onClose, onClearChats }) {
           <p className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">About Muffin</p>
           <p className="text-sm leading-relaxed text-zinc-400">
             Muffin 🧁 is the CS Initiative club's assistant for USACO prep, coding help, and general
-            questions. It's a free tool built on the Groq API, shared by the whole club with one
-            passcode — no accounts, no tracking. Chat history stays only in your browser.
+            questions. It's a free tool built on the Groq API — no accounts, no tracking. Chat
+            history stays only in your browser.
           </p>
         </div>
       </div>

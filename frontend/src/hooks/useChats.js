@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as store from '../lib/storage';
-import { streamChat, AuthError, RateLimitError, UpstreamError } from '../lib/api';
+import { streamChat, RateLimitError, UpstreamError } from '../lib/api';
 
 function friendlyMessage(err) {
   if (err instanceof RateLimitError) {
@@ -44,7 +44,6 @@ export function useChats() {
   const [activeChatId, setActiveChatIdState] = useState(() => store.getActiveChatId());
   const [isThinking, setIsThinking] = useState(false);
   const [streaming, setStreaming] = useState(null); // { chatId, text }
-  const [error, setError] = useState(null);
   const abortRef = useRef(null);
 
   const refresh = useCallback(() => {
@@ -95,8 +94,7 @@ export function useChats() {
   }, [refresh]);
 
   const runStream = useCallback(
-    async (chatId, historyForApi, passcode) => {
-      setError(null);
+    async (chatId, historyForApi) => {
       setIsThinking(true);
       setStreaming({ chatId, text: '' });
 
@@ -108,7 +106,6 @@ export function useChats() {
       try {
         full = await streamChat({
           messages: trimHistoryForApi(historyForApi),
-          passcode,
           signal: controller.signal,
           onDelta: (_chunk, soFar) => {
             setIsThinking(false);
@@ -118,12 +115,6 @@ export function useChats() {
       } catch (err) {
         if (err.name === 'AbortError') {
           stoppedEarly = true;
-        } else if (err instanceof AuthError) {
-          setError('auth');
-          setStreaming(null);
-          setIsThinking(false);
-          abortRef.current = null;
-          return;
         } else {
           store.addMessage(chatId, {
             id: crypto.randomUUID(),
@@ -166,7 +157,7 @@ export function useChats() {
   );
 
   const sendMessage = useCallback(
-    async ({ text, images = [], files = [], passcode }) => {
+    async ({ text, images = [], files = [] }) => {
       let chatId = activeChatId;
       if (!chatId) {
         const chat = store.createChat();
@@ -186,7 +177,7 @@ export function useChats() {
       refresh();
 
       const chat = store.getChat(chatId);
-      await runStream(chatId, chat.messages, passcode);
+      await runStream(chatId, chat.messages);
     },
     [activeChatId, refresh, runStream]
   );
@@ -196,7 +187,7 @@ export function useChats() {
   }, []);
 
   const editMessage = useCallback(
-    async (messageId, newText, passcode) => {
+    async (messageId, newText) => {
       if (!activeChatId) return;
       const chat = store.getChat(activeChatId);
       if (!chat) return;
@@ -212,29 +203,26 @@ export function useChats() {
 
       store.updateChatMessages(activeChatId, messages);
       refresh();
-      await runStream(activeChatId, messages, passcode);
+      await runStream(activeChatId, messages);
     },
     [activeChatId, refresh, runStream]
   );
 
-  const regenerate = useCallback(
-    async (passcode) => {
-      if (!activeChatId) return;
-      const chat = store.getChat(activeChatId);
-      if (!chat || chat.messages.length === 0) return;
+  const regenerate = useCallback(async () => {
+    if (!activeChatId) return;
+    const chat = store.getChat(activeChatId);
+    if (!chat || chat.messages.length === 0) return;
 
-      const messages = [...chat.messages];
-      while (messages.length && messages[messages.length - 1].role === 'assistant') {
-        messages.pop();
-      }
-      if (messages.length === 0) return;
+    const messages = [...chat.messages];
+    while (messages.length && messages[messages.length - 1].role === 'assistant') {
+      messages.pop();
+    }
+    if (messages.length === 0) return;
 
-      store.updateChatMessages(activeChatId, messages);
-      refresh();
-      await runStream(activeChatId, messages, passcode);
-    },
-    [activeChatId, refresh, runStream]
-  );
+    store.updateChatMessages(activeChatId, messages);
+    refresh();
+    await runStream(activeChatId, messages);
+  }, [activeChatId, refresh, runStream]);
 
   return {
     chats,
@@ -242,8 +230,6 @@ export function useChats() {
     activeChatId,
     isThinking,
     streaming,
-    error,
-    setError,
     selectChat,
     newChat,
     removeChat,
