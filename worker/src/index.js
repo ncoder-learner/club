@@ -27,10 +27,10 @@ const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GEMINI_URL = (model) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
 
-// Ordered fallback chains. Rate limits on Groq are per-model, so if the primary
-// model is rate-limited we retry on a secondary model with its own separate quota
-// before giving up — this stretches the free tier further without needing another key.
-const TEXT_MODELS = ['groq/compound', 'llama-3.3-70b-versatile'];
+// Groq fallback chains, only used if Gemini (primary) is unconfigured, rate-limited,
+// or comes back empty. groq/compound is deliberately excluded — it's the model that
+// was leaking "**Reasoning**" preambles and <think> tags into replies.
+const TEXT_MODELS = ['llama-3.3-70b-versatile'];
 const VISION_MODELS = ['qwen/qwen3.6-27b', 'meta-llama/llama-4-scout-17b-16e-instruct'];
 const GEMINI_MODEL = 'gemini-2.0-flash';
 
@@ -339,18 +339,35 @@ async function* streamGeminiDeltas(body) {
   }
 }
 
-// Drives the Groq fallback chain (and Gemini beyond it) up to the first real
+// Drives Gemini (primary) and the Groq fallback chain up to the first real
 // content delta, then hands back that delta plus an iterator for the rest.
-// Reasoning-heavy models (e.g. groq/compound) sometimes burn their whole output
-// budget on internal reasoning and return 200 OK with zero actual content —
-// waiting for the first delta (rather than the whole stream) before committing
-// lets us fall through to the next model on that case while still streaming
-// every model that does produce content token-by-token.
+// Waiting for the first delta (rather than the whole stream) before committing
+// lets us fall through to the next model if one produces a 200 OK with zero
+// actual content, while still streaming every model that does produce content
+// token-by-token. Gemini goes first — it's a stronger, more consistent model
+// with a generous free tier and no reasoning-leak quirks; Groq's free tier
+// (fast but tightly rate-limited per model) is the fallback if Gemini is
+// unconfigured, rate-limited, or comes back empty.
 async function resolveFirstContent(env, chain, upstreamMessages) {
   let lastRes = null;
   let lastErrText = '';
   let lastIsContextError = false;
   let sawEmptyCompletion = false;
+
+  if (env.GEMINI_API_KEY) {
+    const geminiRes = await callGemini(env, upstreamMessages);
+    if (geminiRes.ok) {
+      const iter = streamGeminiDeltas(geminiRes.body)[Symbol.asyncIterator]();
+      const first = await iter.next();
+      if (!first.done && first.value) {
+        return { ok: true, firstChunk: first.value, rest: iter };
+      }
+      sawEmptyCompletion = true;
+    } else {
+      lastRes = geminiRes;
+      lastErrText = await geminiRes.text().catch(() => '');
+    }
+  }
 
   for (const model of chain) {
     const res = await callGroq(env, model, upstreamMessages);
@@ -368,21 +385,8 @@ async function resolveFirstContent(env, chain, upstreamMessages) {
     lastIsContextError =
       res.status === 400 && /context.?length|too (?:many|long)|maximum context/i.test(lastErrText);
     // Fall through the chain on rate limits or context-length errors — a smaller
-    // model in the chain (or Gemini below) may have a bigger context window.
+    // model in the chain may have a bigger context window.
     if (res.status !== 429 && !lastIsContextError) break;
-  }
-
-  // Groq never produced usable content (rate-limited, blew the context window,
-  // returned an empty completion, or failed outright) — try Gemini if configured.
-  if ((lastRes?.status === 429 || lastIsContextError || sawEmptyCompletion) && env.GEMINI_API_KEY) {
-    const geminiRes = await callGemini(env, upstreamMessages);
-    if (geminiRes.ok) {
-      const iter = streamGeminiDeltas(geminiRes.body)[Symbol.asyncIterator]();
-      const first = await iter.next();
-      if (!first.done && first.value) {
-        return { ok: true, firstChunk: first.value, rest: iter };
-      }
-    }
   }
 
   if (lastRes?.status === 429) {

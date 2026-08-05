@@ -10,28 +10,96 @@ export async function extractDocxText(file) {
   return value;
 }
 
+const NAMED_COLORS = {
+  red: 'FF0000',
+  blue: '0000FF',
+  green: '008000',
+  orange: 'FFA500',
+  purple: '800080',
+  black: '000000',
+  gray: '808080',
+  grey: '808080',
+  yellow: 'FFD700',
+};
+
+function resolveColor(raw) {
+  const v = raw.trim().toLowerCase();
+  if (NAMED_COLORS[v]) return NAMED_COLORS[v];
+  const hexMatch = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(v);
+  if (!hexMatch) return undefined;
+  let hex = hexMatch[1];
+  if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+  return hex.toUpperCase();
+}
+
 // Turns a chat message's Markdown-ish text into a real .docx Blob — headings,
-// bullet lists, fenced code blocks (monospace), and **bold**/*italic* runs all
-// carry over; anything fancier (tables, links) just falls back to a plain paragraph.
+// bullet lists, fenced code blocks (monospace), **bold**/*italic* runs, and a
+// small amount of inline HTML (<span style="color:...">, <br>) all carry over —
+// the model sometimes answers worksheet-style questions with colored spans
+// (e.g. "answer in red"), and those need to actually render as colored text in
+// the doc, not literal tag text. Anything fancier (tables, links) just falls
+// back to a plain paragraph.
 export async function markdownToDocxBlob(text) {
   const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import('docx');
 
   const HEADING_LEVELS = [HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3];
 
-  function inlineRuns(line) {
+  // Recursively parses inline markdown + a small safe subset of HTML into
+  // TextRuns, threading `base` (bold/italics/color so far) down through nested
+  // spans — e.g. a <span style="color:red"> wrapping **bold** text needs both.
+  function inlineRuns(str, base = {}) {
     const runs = [];
-    const re = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
-    let last = 0;
-    let match;
-    while ((match = re.exec(line))) {
-      if (match.index > last) runs.push(new TextRun(line.slice(last, match.index)));
-      if (match[2] !== undefined) runs.push(new TextRun({ text: match[2], bold: true }));
-      else if (match[3] !== undefined) runs.push(new TextRun({ text: match[3], italics: true }));
-      else if (match[4] !== undefined) runs.push(new TextRun({ text: match[4], font: 'Consolas' }));
-      last = re.lastIndex;
+    let i = 0;
+    while (i < str.length) {
+      const rest = str.slice(i);
+
+      const br = /^<br\s*\/?>/i.exec(rest);
+      if (br) {
+        runs.push(new TextRun({ text: '', break: 1 }));
+        i += br[0].length;
+        continue;
+      }
+
+      const spanOpen = /^<span\s+style="[^"]*color:\s*([^;"]+?)\s*(?:;[^"]*)?">/i.exec(rest);
+      if (spanOpen) {
+        const openLen = spanOpen[0].length;
+        const closeIdx = rest.slice(openLen).search(/<\/span>/i);
+        if (closeIdx !== -1) {
+          const inner = rest.slice(openLen, openLen + closeIdx);
+          const color = resolveColor(spanOpen[1]);
+          runs.push(...inlineRuns(inner, color ? { ...base, color } : base));
+          i += openLen + closeIdx + '</span>'.length;
+          continue;
+        }
+      }
+
+      const bold = /^\*\*(.+?)\*\*/.exec(rest);
+      if (bold) {
+        runs.push(...inlineRuns(bold[1], { ...base, bold: true }));
+        i += bold[0].length;
+        continue;
+      }
+
+      const italic = /^\*(.+?)\*/.exec(rest);
+      if (italic) {
+        runs.push(...inlineRuns(italic[1], { ...base, italics: true }));
+        i += italic[0].length;
+        continue;
+      }
+
+      const code = /^`(.+?)`/.exec(rest);
+      if (code) {
+        runs.push(new TextRun({ text: code[1], font: 'Consolas', ...base }));
+        i += code[0].length;
+        continue;
+      }
+
+      const nextMarkerOffset = rest.slice(1).search(/<br\s*\/?>|<span\s|\*\*|\*|`/i);
+      const end = nextMarkerOffset === -1 ? str.length : i + 1 + nextMarkerOffset;
+      runs.push(new TextRun({ text: str.slice(i, end), ...base }));
+      i = end;
     }
-    if (last < line.length) runs.push(new TextRun(line.slice(last)));
-    return runs.length ? runs : [new TextRun('')];
+    return runs.length ? runs : [new TextRun({ text: '', ...base })];
   }
 
   const paragraphs = [];

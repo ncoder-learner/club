@@ -4,6 +4,21 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+
+// The model sometimes answers with inline HTML like <span style="color:red">
+// (e.g. "fill in your answers in red" on a worksheet) — extend the default
+// sanitize schema just enough to allow that and <br>, rather than stripping it
+// entirely or rendering it as literal tag text.
+const markdownSanitizeSchema = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), 'span'],
+  attributes: {
+    ...defaultSchema.attributes,
+    span: [...(defaultSchema.attributes?.span ?? []), 'style'],
+  },
+};
 import { Check, Copy, FileDown, Loader2, Pencil, RotateCcw, X } from 'lucide-react';
 import CodeBlock from './CodeBlock';
 import { normalizeLatexDelimiters } from '../../lib/latex';
@@ -121,7 +136,12 @@ export default function MessageBubble({
             <div className="prose prose-invert prose-sm max-w-none prose-p:my-2 prose-headings:my-2 prose-pre:my-0 prose-pre:bg-transparent prose-pre:p-0">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeHighlight, rehypeKatex]}
+                rehypePlugins={[
+                  rehypeRaw,
+                  [rehypeSanitize, markdownSanitizeSchema],
+                  rehypeHighlight,
+                  rehypeKatex,
+                ]}
                 components={{
                   code({ className, children, ...props }) {
                     if (!className) {
