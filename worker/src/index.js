@@ -36,6 +36,12 @@ const GEMINI_MODEL = 'gemini-2.0-flash';
 
 const SYSTEM_PROMPT = `You are Muffin 🧁, a versatile AI assistant built for the CS Initiative club.
 
+Never show your internal reasoning, chain of thought, or a "Reasoning" section/header before your
+answer — no <think> tags, no "Here's my thinking process" preamble, no numbered planning steps
+shown to the user. Go straight to the actual response. If a question genuinely calls for showing
+steps (like the USACO walkthrough below), those steps ARE the answer — that's different from
+narrating your own reasoning about how to respond.
+
 You help with general questions, coding, and especially USACO (USA Computing Olympiad) prep. When a
 question involves competitive programming or USACO, infer the likely division (Bronze, Silver, Gold,
 or Platinum) from context — problem phrasing, constraints, and topics mentioned — and calibrate the
@@ -107,6 +113,112 @@ function json(data, status, origin) {
 
 function sseChunk(text) {
   return `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
+}
+
+// Some models in the fallback chain (reasoning models) emit their internal
+// "thinking" as literal <think>...</think> tags inline in the content stream —
+// not in a separate field we could just omit, so it has to be filtered out of
+// the text itself. Deltas arrive in small pieces, so a tag can land split across
+// two chunks (e.g. "<th" then "ink>") — this holds back just enough trailing
+// text each call to never falsely emit part of a tag before knowing it's not one.
+function createThinkFilter() {
+  let buffer = '';
+  let inThink = false;
+  const OPEN = '<think>';
+  const CLOSE = '</think>';
+
+  // isFlush=true means "no more chunks are coming" — release whatever's held
+  // back instead of continuing to wait for a tag that will never arrive.
+  function drain(isFlush) {
+    let output = '';
+    while (true) {
+      if (!inThink) {
+        const idx = buffer.indexOf(OPEN);
+        if (idx === -1) {
+          const holdBack = isFlush ? 0 : Math.min(buffer.length, OPEN.length - 1);
+          output += buffer.slice(0, buffer.length - holdBack);
+          buffer = buffer.slice(buffer.length - holdBack);
+          return output;
+        }
+        output += buffer.slice(0, idx);
+        buffer = buffer.slice(idx + OPEN.length);
+        inThink = true;
+      } else {
+        const idx = buffer.indexOf(CLOSE);
+        if (idx === -1) {
+          buffer = isFlush ? '' : buffer.slice(Math.max(0, buffer.length - (CLOSE.length - 1)));
+          return output;
+        }
+        buffer = buffer.slice(idx + CLOSE.length);
+        inThink = false;
+      }
+    }
+  }
+
+  function feed(chunk) {
+    buffer += chunk;
+    return drain(false);
+  }
+  feed.flush = () => drain(true);
+  return feed;
+}
+
+// groq/compound (unlike most models) doesn't wrap its reasoning in <think> tags
+// at all — for many prompts it just opens the whole reply with a visible
+// "**Reasoning**" section, walks through its steps, then a "**Answer**" section
+// with the actual answer. System-prompt instructions not to do this don't
+// reliably work on it, so this catches the one specific, distinctive shape of
+// that pattern (response starts with "**Reasoning") and skips straight to
+// whatever follows "**Answer...**". A generous buffer cap means that if the
+// answer marker never shows up, everything buffered gets released as-is
+// instead of silently disappearing — better to show the reasoning than eat
+// real content on a pattern that didn't match what we expected.
+function createReasoningPreambleFilter() {
+  const MARKER = '**Reasoning';
+  const ANSWER_RE = /\*\*Answer[^*\n]*\*\*:?\s*/i;
+  const MAX_BUFFER = 4000;
+  let buffer = '';
+  let mode = 'detecting'; // 'detecting' -> 'suppressing' | 'passthrough'
+
+  function feed(chunk) {
+    if (mode === 'passthrough') return chunk;
+    buffer += chunk;
+
+    if (mode === 'detecting') {
+      if (buffer.length < MARKER.length) {
+        if (MARKER.startsWith(buffer)) return ''; // ambiguous prefix — wait for more
+        mode = 'passthrough';
+        return releaseAll();
+      }
+      if (!buffer.startsWith(MARKER)) {
+        mode = 'passthrough';
+        return releaseAll();
+      }
+      mode = 'suppressing';
+    }
+
+    const match = ANSWER_RE.exec(buffer);
+    if (match) {
+      mode = 'passthrough';
+      const rest = buffer.slice(match.index + match[0].length);
+      buffer = '';
+      return rest;
+    }
+    if (buffer.length > MAX_BUFFER) {
+      mode = 'passthrough';
+      return releaseAll();
+    }
+    return '';
+  }
+
+  function releaseAll() {
+    const out = buffer;
+    buffer = '';
+    return out;
+  }
+
+  feed.flush = () => (mode !== 'passthrough' ? releaseAll() : '');
+  return feed;
 }
 
 function hasImage(messages) {
@@ -387,12 +499,23 @@ export default {
       const stream = new ReadableStream({
         async start(controller) {
           const encoder = new TextEncoder();
-          let full = result.firstChunk;
-          controller.enqueue(encoder.encode(sseChunk(result.firstChunk)));
+          const stripThink = createThinkFilter();
+          const stripReasoning = createReasoningPreambleFilter();
+          const clean = (text) => stripReasoning(stripThink(text));
+          let full = '';
+
+          const emit = (text) => {
+            if (!text) return;
+            full += text;
+            controller.enqueue(encoder.encode(sseChunk(text)));
+          };
+
+          emit(clean(result.firstChunk));
           for await (const delta of result.rest) {
-            full += delta;
-            controller.enqueue(encoder.encode(sseChunk(delta)));
+            emit(clean(delta));
           }
+          emit(stripReasoning(stripThink.flush()));
+          emit(stripReasoning.flush());
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();
           if (cacheKey) {
